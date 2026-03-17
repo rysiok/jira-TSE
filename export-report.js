@@ -23,16 +23,26 @@ Jira Time Tracker Flexible Report – export script (zero dependencies)
 
 Usage:
   node export-report.js --url "<report-url>" -o <output-file>
+  node export-report.js --server [--port <port>]
 
-Required:
+CLI mode (export to file):
   --url <url>    Full report URL (copy from browser address bar)
   -o <file>      Output file path  (e.g. report.xls)
+
+Server mode (REST API):
+  --server       Start HTTP server instead of CLI export
+  --port <port>  Server port (default: 3000, or PORT env var)
+
+  POST /report   JSON body: { "url": "<report-url>", "token": "<pat>" }
+                 Returns:   { "report": "<base64-encoded-xls>" }
+  GET  /health   Returns:   { "status": "ok" }
 
 Authentication:
   --token <pat>      Personal Access Token (or set JIRA_PAT env var)
 
 Examples:
   node export-report.js --url "https://jira.example.com/plugins/servlet/timereports?reportKey=jira-timesheet-plugin:timereportstt#!/?filterOrProjectId=filter_43643&startDate=2026-02-01&endDate=2026-02-28&groupByField=workeduser&sum=month&user=John.Doe&view=month&export=html" --token your-token -o feb-report.xls
+  node export-report.js --server --port 8080
 `);
 }
 
@@ -41,16 +51,18 @@ function parseArgs() {
   const opts = {};
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
-      case '--url':  opts.url = args[++i]; break;
-      case '-o':     opts.output = args[++i]; break;
-      case '--token': opts.token = args[++i]; break;
+      case '--url':    opts.url = args[++i]; break;
+      case '-o':       opts.output = args[++i]; break;
+      case '--token':  opts.token = args[++i]; break;
+      case '--server': opts.server = true; break;
+      case '--port':   opts.port = parseInt(args[++i], 10); break;
       case '--help':
       case '-h':
         printHelp();
         process.exit(0);
     }
   }
-  if (!opts.url || !opts.output) {
+  if (!opts.server && (!opts.url || !opts.output)) {
     printHelp();
     process.exit(1);
   }
@@ -91,13 +103,13 @@ function parseReportUrl(rawUrl) {
 
 // ---- HTTP helper -----------------------------------------------------------
 
-function buildAuthHeaders() {
+function buildAuthHeaders(token) {
   const headers = {
     'Accept': 'application/json',
     'Content-Type': 'application/json',
   };
 
-  const pat = globalThis.__cliToken || process.env.JIRA_PAT;
+  const pat = token || process.env.JIRA_PAT;
   if (!pat) {
     throw new Error('No PAT configured. Use --token <pat> or set JIRA_PAT environment variable.');
   }
@@ -159,7 +171,7 @@ async function jiraGet(origin, apiPath, headers) {
 
 // ---- Jira data fetching ----------------------------------------------------
 
-async function searchIssues(origin, headers, filterId, startDate, endDate, users) {
+async function searchIssues(origin, headers, filterId, startDate, endDate, users, quiet) {
   // Replicate the same JQL the plugin builds:
   //   filter=<id> and worklogDate >= "<day-before-start>" and worklogDate < "<day-after-end>"
   //   and (worklogAuthor in ("user1","user2"))
@@ -182,11 +194,11 @@ async function searchIssues(origin, headers, filterId, startDate, endDate, users
     const data = await jiraGet(origin, apiPath, headers);
     allIssues.push(...data.issues);
     const pct = Math.round(allIssues.length / data.total * 100);
-    process.stdout.write(`\rFetching issues... ${pct}%`);
+    if (!quiet) process.stdout.write(`\rFetching issues... ${pct}%`);
     if (allIssues.length >= data.total) break;
     startAt = allIssues.length;
   }
-  process.stdout.write('\n');
+  if (!quiet) process.stdout.write('\n');
   return allIssues;
 }
 
@@ -348,62 +360,194 @@ ${tableHtml}
 `;
 }
 
-// ---- Main ------------------------------------------------------------------
+// ---- Report core -----------------------------------------------------------
 
-async function main() {
-  const startTime = process.hrtime.bigint();
-  const { url, output, token } = parseArgs();
-  if (token) globalThis.__cliToken = token;
+async function generateReport({ url, token, quiet }) {
   const params = parseReportUrl(url);
-  const headers = buildAuthHeaders();
+  const headers = buildAuthHeaders(token);
 
-  console.log(`Jira       : ${params.origin}`);
-  console.log(`Filter     : ${params.filterId}`);
-  console.log(`Date range : ${params.startDate} – ${params.endDate}`);
-  console.log(`Users      : ${params.users.length ? params.users.join(', ') : '(all)'}`);
-  console.log(`Output     : ${output}`);
-  console.log();
+  if (!quiet) {
+    console.log(`Jira       : ${params.origin}`);
+    console.log(`Filter     : ${params.filterId}`);
+    console.log(`Date range : ${params.startDate} – ${params.endDate}`);
+    console.log(`Users      : ${params.users.length ? params.users.join(', ') : '(all)'}`);
+    console.log();
+  }
 
   // 1. Search for issues with worklogs in the date range
   const issues = await searchIssues(
     params.origin, headers,
-    params.filterId, params.startDate, params.endDate, params.users
+    params.filterId, params.startDate, params.endDate, params.users, quiet
   );
-  console.log(`Found ${issues.length} issues`);
+  if (!quiet) console.log(`Found ${issues.length} issues`);
 
   // 2. For issues where inline worklogs are truncated, fetch the full set
   const truncated = issues.filter(i => i.fields.worklog && i.fields.worklog.total > i.fields.worklog.maxResults);
   for (let idx = 0; idx < truncated.length; idx++) {
     const issue = truncated[idx];
-    const pct = Math.round((idx + 1) / truncated.length * 100);
-    process.stdout.write(`\rFetching full worklogs... ${pct}%`);
+    if (!quiet) {
+      const pct = Math.round((idx + 1) / truncated.length * 100);
+      process.stdout.write(`\rFetching full worklogs... ${pct}%`);
+    }
     issue._worklogs = await fetchFullWorklogs(
       params.origin, headers, issue.key, params.startDate
     );
   }
-  if (truncated.length) process.stdout.write('\n');
+  if (!quiet && truncated.length) process.stdout.write('\n');
 
   // 3. Process worklogs
-  console.log('Processing worklogs...');
+  if (!quiet) console.log('Processing worklogs...');
   const { grouped, months } = processWorklogs(issues, params.startDate, params.endDate, params.users);
 
   // 4. Generate export
-  console.log('Generating report...');
+  if (!quiet) console.log('Generating report...');
   const tableHtml = generateHtml(params, grouped, months);
-  const fileContent = wrapAsExcelHtml(tableHtml);
+  return wrapAsExcelHtml(tableHtml);
+}
 
-  // 5. Write to file
-  const outputDir = path.dirname(path.resolve(output));
+// ---- HTTP Server -----------------------------------------------------------
+
+function startServer(opts) {
+  const port = opts.port || parseInt(process.env.PORT, 10) || 3000;
+  const MAX_BODY = 1024 * 1024; // 1 MB
+
+  const server = http.createServer((req, res) => {
+    const startTime = Date.now();
+    let responded = false;
+
+    const sendJson = (statusCode, obj) => {
+      if (responded) return;
+      responded = true;
+      const body = JSON.stringify(obj);
+      res.writeHead(statusCode, {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-store',
+      });
+      res.end(body);
+      console.log(`${req.method} ${req.url} ${statusCode} ${Date.now() - startTime}ms`);
+    };
+
+    // GET /health
+    if (req.method === 'GET' && req.url === '/health') {
+      return sendJson(200, { status: 'ok' });
+    }
+
+    // POST /report
+    if (req.method === 'POST' && req.url === '/report') {
+      const chunks = [];
+      let size = 0;
+
+      req.on('data', (chunk) => {
+        size += chunk.length;
+        if (size <= MAX_BODY) {
+          chunks.push(chunk);
+        }
+      });
+
+      req.on('end', async () => {
+        if (size > MAX_BODY) {
+          return sendJson(413, { error: 'Request body too large' });
+        }
+
+        let body;
+        try {
+          body = JSON.parse(Buffer.concat(chunks).toString('utf-8'));
+        } catch {
+          return sendJson(400, { error: 'Invalid JSON body' });
+        }
+
+        const { url, token } = body;
+        if (!url || typeof url !== 'string') {
+          return sendJson(400, { error: 'Missing or invalid "url" field' });
+        }
+        if (!token || typeof token !== 'string') {
+          return sendJson(400, { error: 'Missing or invalid "token" field' });
+        }
+        if (!url.startsWith('https://')) {
+          return sendJson(400, { error: '"url" must start with https://' });
+        }
+
+        try {
+          const html = await generateReport({ url, token, quiet: true });
+          const base64 = Buffer.from(html, 'utf-8').toString('base64');
+          sendJson(200, { report: base64 });
+        } catch (err) {
+          const msg = err.message || 'Internal server error';
+          const status = msg.includes('401') ? 401
+            : msg.includes('403') ? 403
+            : msg.includes('400') ? 400
+            : 500;
+          sendJson(status, { error: msg });
+        }
+      });
+
+      req.on('error', () => sendJson(500, { error: 'Request stream error' }));
+      return;
+    }
+
+    // Everything else -> 404
+    sendJson(404, { error: 'Not found' });
+  });
+
+  // Graceful shutdown
+  const shutdown = () => {
+    console.log('\nShutting down...');
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(1), 5000).unref();
+  };
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
+
+  server.listen(port, () => {
+    console.log(`Server listening on port ${port}`);
+    console.log('  POST /report  — generate report');
+    console.log('  GET  /health  — health check');
+  });
+}
+
+// ---- Main ------------------------------------------------------------------
+
+async function main() {
+  const opts = parseArgs();
+
+  if (opts.server) {
+    startServer(opts);
+    return;
+  }
+
+  const startTime = process.hrtime.bigint();
+  console.log(`Output     : ${opts.output}`);
+  const fileContent = await generateReport({ url: opts.url, token: opts.token, quiet: false });
+
+  // Write to file
+  const outputDir = path.dirname(path.resolve(opts.output));
   if (outputDir && !fs.existsSync(outputDir)) {
     fs.mkdirSync(outputDir, { recursive: true });
   }
-  fs.writeFileSync(output, fileContent, 'utf-8');
+  fs.writeFileSync(opts.output, fileContent, 'utf-8');
   const elapsed = Number(process.hrtime.bigint() - startTime) / 1e9;
-  console.log(`\nDone! Report saved to: ${path.resolve(output)}`);
+  console.log(`\nDone! Report saved to: ${path.resolve(opts.output)}`);
   console.log(`Generated in ${elapsed.toFixed(2)}s`);
 }
 
-main().catch((err) => {
-  console.error('Error:', err.message);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((err) => {
+    console.error('Error:', err.message);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  parseReportUrl,
+  buildAuthHeaders,
+  shiftDate,
+  getMonthKey,
+  getMonthLabel,
+  formatHours,
+  escapeHtml,
+  processWorklogs,
+  generateHtml,
+  wrapAsExcelHtml,
+  generateReport,
+  startServer,
+};
