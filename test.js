@@ -40,7 +40,7 @@ function makeIssue(key, project, summary, worklogs) {
 
 function makeWorklog(author, displayName, started, timeSpentSeconds) {
   return {
-    author: { name: author, displayName },
+    author: { name: author, displayName, emailAddress: `${author}@example.com` },
     started,
     timeSpentSeconds,
   };
@@ -197,28 +197,28 @@ describe('processWorklogs', () => {
 
   it('groups worklogs by user', () => {
     const { grouped } = processWorklogs(issues, '2026-02-01', '2026-02-28', []);
-    assert.ok(grouped['John Doe']);
-    assert.ok(grouped['Jane Smith']);
+    assert.ok(grouped['john']);
+    assert.ok(grouped['jane']);
     assert.equal(Object.keys(grouped).length, 2);
   });
 
   it('aggregates total seconds per issue', () => {
     const { grouped } = processWorklogs(issues, '2026-02-01', '2026-02-28', []);
     // John: PROJ-1 = 3600+7200=10800, PROJ-2 = 5400
-    assert.equal(grouped['John Doe']['PROJ-1'].total, 10800);
-    assert.equal(grouped['John Doe']['PROJ-2'].total, 5400);
+    assert.equal(grouped['john']['PROJ-1'].total, 10800);
+    assert.equal(grouped['john']['PROJ-2'].total, 5400);
   });
 
   it('aggregates per month', () => {
     const { grouped, months } = processWorklogs(issues, '2026-02-01', '2026-02-28', []);
     assert.deepEqual(months, ['2026-02']);
-    assert.equal(grouped['John Doe']['PROJ-1'].months['2026-02'], 10800);
+    assert.equal(grouped['john']['PROJ-1'].months['2026-02'], 10800);
   });
 
   it('filters by target users', () => {
     const { grouped } = processWorklogs(issues, '2026-02-01', '2026-02-28', ['john']);
-    assert.ok(grouped['John Doe']);
-    assert.equal(grouped['Jane Smith'], undefined);
+    assert.ok(grouped['john']);
+    assert.equal(grouped['jane'], undefined);
   });
 
   it('excludes worklogs outside date range', () => {
@@ -230,7 +230,7 @@ describe('processWorklogs', () => {
       ]),
     ];
     const { grouped } = processWorklogs(outOfRange, '2026-02-01', '2026-02-28', []);
-    assert.equal(grouped['John Doe']['PROJ-3'].total, 1800);
+    assert.equal(grouped['john']['PROJ-3'].total, 1800);
   });
 
   it('handles multiple months', () => {
@@ -242,8 +242,8 @@ describe('processWorklogs', () => {
     ];
     const { grouped, months } = processWorklogs(crossMonth, '2026-02-01', '2026-03-31', []);
     assert.deepEqual(months, ['2026-02', '2026-03']);
-    assert.equal(grouped['John Doe']['PROJ-4'].months['2026-02'], 3600);
-    assert.equal(grouped['John Doe']['PROJ-4'].months['2026-03'], 7200);
+    assert.equal(grouped['john']['PROJ-4'].months['2026-02'], 3600);
+    assert.equal(grouped['john']['PROJ-4'].months['2026-03'], 7200);
   });
 
   it('returns empty result for no worklogs', () => {
@@ -259,47 +259,53 @@ describe('processWorklogs', () => {
       makeWorklog('john', 'John Doe', '2026-02-10T09:00:00.000+0000', 4500),
     ];
     const { grouped } = processWorklogs([issue], '2026-02-01', '2026-02-28', []);
-    assert.equal(grouped['John Doe']['PROJ-6'].total, 4500);
+    assert.equal(grouped['john']['PROJ-6'].total, 4500);
   });
 });
 
 // ---- JSON report generation tests ------------------------------------------
 
 describe('buildJsonReport', () => {
-  it('aggregates hours per user using original display name', () => {
+  it('aggregates hours per user keyed by username', () => {
     const grouped = {
-      'John Doe': {
+      'john': {
+        _meta: { email: 'john@example.com' },
         'PROJ-1': { summary: 'Task', project: 'PROJ', months: { '2026-02': 7200 }, total: 7200 },
         'PROJ-2': { summary: 'Task2', project: 'PROJ', months: { '2026-02': 3600 }, total: 3600 },
       },
     };
     const report = buildJsonReport(grouped);
-    assert.deepEqual(report, { 'John Doe': 3 });
+    assert.deepEqual(report, { 'john': { hours: 3, email: 'john@example.com' } });
   });
 
   it('handles multiple users', () => {
     const grouped = {
-      'Alice A': {
+      'alice': {
+        _meta: { email: 'alice@example.com' },
         'X-1': { summary: 'T', project: 'X', months: { '2026-02': 5400 }, total: 5400 },
       },
-      'Bob B': {
+      'bob': {
+        _meta: { email: 'bob@example.com' },
         'X-2': { summary: 'T', project: 'X', months: { '2026-02': 9000 }, total: 9000 },
       },
     };
     const report = buildJsonReport(grouped);
-    assert.equal(report['Alice A'], 1.5);
-    assert.equal(report['Bob B'], 2.5);
+    assert.equal(report['alice'].hours, 1.5);
+    assert.equal(report['alice'].email, 'alice@example.com');
+    assert.equal(report['bob'].hours, 2.5);
+    assert.equal(report['bob'].email, 'bob@example.com');
   });
 
   it('rounds to two decimal places', () => {
     const grouped = {
-      'Test User': {
+      'test': {
+        _meta: { email: 'test@example.com' },
         'X-1': { summary: 'T', project: 'X', months: { '2026-02': 1234 }, total: 1234 },
       },
     };
     const report = buildJsonReport(grouped);
     // 1234 / 3600 = 0.342777... → 0.34
-    assert.equal(report['Test User'], 0.34);
+    assert.equal(report['test'].hours, 0.34);
   });
 
   it('returns empty object for no data', () => {
@@ -670,12 +676,13 @@ describe('generateReport integration', () => {
     const { generateReport } = require('./export-report.js');
     const report = await generateReport({ url, token: 'test-token', quiet: true });
 
-    // Verify it's a JSON object with display name keys
+    // Verify it's a JSON object with username keys
     assert.equal(typeof report, 'object');
-    assert.ok(report['Alice A'] !== undefined);
+    assert.ok(report['alice'] !== undefined);
 
     // Verify hours calculation: Alice total = 3600+7200+5400 = 16200s = 4.5h
-    assert.equal(report['Alice A'], 4.5);
+    assert.equal(report['alice'].hours, 4.5);
+    assert.equal(report['alice'].email, '');
   });
 
   it('returns serializable JSON', async () => {

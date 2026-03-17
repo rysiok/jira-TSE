@@ -73,12 +73,12 @@ curl -X POST http://localhost:3000/report \
 **Response (200):**
 ```json
 {
-  "John Doe": 118.5,
-  "Smith, Jane": 96.25
+  "john.doe": { "hours": 118.5, "email": "john.doe@example.com" },
+  "jane.smith": { "hours": 96.25, "email": "jane.smith@example.com" }
 }
 ```
 
-Returns a JSON object mapping Jira display names to total hours worked.
+Returns a JSON object keyed by Jira username with hours and email.
 
 **Error responses:**
 - `400` — missing/invalid fields, invalid URL, bad Jira request
@@ -147,7 +147,6 @@ curl -s -X POST http://localhost:8080/report \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer my-pat-token" \
   -d '{"url": "..."}' \
-  | node -e "process.stdin.on('data',d=>{const r=JSON.parse(d);process.stdout.write(JSON.stringify(r.report,null,2))})" \
   > report.json
 ```
 
@@ -167,23 +166,24 @@ docker run -p 8080:8080 -e PORT=8080 jira-tse
 2. Calls Jira REST API v2 (`/rest/api/2/search`) with the equivalent JQL query
 3. Fetches full worklogs for issues where inline worklog data is truncated (handles pagination for >1000 entries); shows progress as percentage (CLI mode)
 4. Aggregates worklogs by user
-5. Generates a JSON report mapping display names to total hours
+5. Generates a JSON report keyed by username with hours and email
 6. In CLI mode: writes JSON to disk and prints generation time
-7. In server mode: returns JSON report in `{ "report": { ... } }` response
+7. In server mode: returns JSON report directly
 
 ## Output format
 
-The output is a JSON object with one entry per user:
+The output is a JSON object with one entry per user, keyed by Jira username:
 
 ```json
 {
-  "John Doe": 118.5,
-  "Jane Smith": 96.25
+  "john.doe": { "hours": 118.5, "email": "john.doe@example.com" },
+  "jane.smith": { "hours": 96.25, "email": "jane.smith@example.com" }
 }
 ```
 
-- Keys use the original display name from the Jira API
-- Values are total hours worked, rounded to two decimal places
+- Keys are Jira usernames
+- `hours` — total hours worked, rounded to two decimal places
+- `email` — Jira email address
 - Supports single user, multiple users (comma-separated), or all users (`allUsers=true`)
 
 ## Requirements

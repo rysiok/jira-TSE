@@ -8,11 +8,11 @@ Dual-mode: CLI tool (export to file) and HTTP REST API server (returns JSON).
 ## Architecture
 - `export-report.js` — the entire application (CLI, HTTP server, Jira API client, JSON report generation)
 - `Dockerfile` — minimal Alpine container running the server
-- `generateReport({ url, token, quiet })` — core async function shared by CLI and server; returns `{ "Display Name": hours }` JSON object
+- `generateReport({ url, token, quiet })` — core async function shared by CLI and server; returns `{ "username": { hours, email } }` JSON object
 - `main()` — thin CLI wrapper: parses args, calls `generateReport()`, writes file
 - `startServer(opts)` — HTTP server: `POST /report` and `GET /health`
 - Calls Jira REST API v2 (`/rest/api/2/search`, `/rest/api/2/issue/{key}/worklog`) with Bearer PAT auth
-- Generates JSON output with per-user total hours in `"Display Name": hours` format
+- Generates JSON output keyed by Jira username with `{ hours, email }` per user
 - Supports multiple comma-separated users from the report URL
 - Supports Jira instances at a subpath (e.g. `https://host/jira/plugins/servlet/...`)
 

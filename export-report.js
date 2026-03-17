@@ -35,7 +35,7 @@ Server mode (REST API):
 
   POST /report   JSON body: { "url": "<report-url>" }
                  Header:    Authorization: Bearer <pat>
-                 Returns:   { "Display Name": hours, ... }
+                 Returns:   { "username": { hours, email }, ... }
   GET  /health   Returns:   { "status": "ok" }
 
 Authentication:
@@ -291,16 +291,16 @@ function processWorklogs(issues, startDate, endDate, targetUsers) {
       allMonths.add(monthKey);
 
       const displayName = wl.author.displayName || author;
-      if (!grouped[displayName]) grouped[displayName] = {};
-      if (!grouped[displayName][issue.key]) {
-        grouped[displayName][issue.key] = {
+      if (!grouped[author]) grouped[author] = { _meta: { email: wl.author.emailAddress || '' } };
+      if (!grouped[author][issue.key]) {
+        grouped[author][issue.key] = {
           summary: issue.fields.summary,
           project: issue.fields.project && issue.fields.project.key,
           months: {},
           total: 0,
         };
       }
-      const entry = grouped[displayName][issue.key];
+      const entry = grouped[author][issue.key];
       entry.months[monthKey] = (entry.months[monthKey] || 0) + wl.timeSpentSeconds;
       entry.total += wl.timeSpentSeconds;
     }
@@ -314,13 +314,15 @@ function processWorklogs(issues, startDate, endDate, targetUsers) {
 
 function buildJsonReport(grouped) {
   const report = {};
-  for (const [displayName, issues] of Object.entries(grouped)) {
+  for (const [username, data] of Object.entries(grouped)) {
+    const meta = data._meta || {};
     let totalSeconds = 0;
-    for (const data of Object.values(issues)) {
-      totalSeconds += data.total;
+    for (const [key, val] of Object.entries(data)) {
+      if (key === '_meta') continue;
+      totalSeconds += val.total;
     }
     const hours = Math.round((totalSeconds / 3600) * 100) / 100;
-    report[displayName] = hours;
+    report[username] = { hours, email: meta.email || '' };
   }
   return report;
 }
