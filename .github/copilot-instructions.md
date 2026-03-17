@@ -45,7 +45,7 @@ docker run -p 3000:3000 jira-tse
 ## Testing
 Unit tests use Node.js built-in test runner (`node:test`) — zero dependencies.
 ```bash
-node --test test.js             # run all 46 tests
+node --test test.js             # run all 48 tests
 ```
 
 Manual verification:

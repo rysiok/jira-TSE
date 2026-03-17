@@ -73,14 +73,12 @@ curl -X POST http://localhost:3000/report \
 **Response (200):**
 ```json
 {
-  "report": {
-    "John Doe": 118.5,
-    "Smith, Jane": 96.25
-  }
+  "John Doe": 118.5,
+  "Smith, Jane": 96.25
 }
 ```
 
-The `report` field contains a JSON object mapping Jira display names to total hours worked.
+Returns a JSON object mapping Jira display names to total hours worked.
 
 **Error responses:**
 - `400` — missing/invalid fields, invalid URL, bad Jira request
