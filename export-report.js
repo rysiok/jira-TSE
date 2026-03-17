@@ -4,7 +4,7 @@
 // Pure Node.js, zero dependencies.
 //
 // Usage:
-//   node export-report.js --url "<report-url>" -o output.xls
+//   node export-report.js --url "<report-url>" -o output.json
 //
 // Authentication:
 //   --token <pat>  or  JIRA_PAT=<personal-access-token>  (Bearer token)
@@ -22,12 +22,12 @@ function printHelp() {
 Jira Time Tracker Flexible Report – export script (zero dependencies)
 
 Usage:
-  node export-report.js --url "<report-url>" -o <output-file>
+  node export-report.js --url "<report-url>" [-o <output-file>]
   node export-report.js --server [--port <port>]
 
-CLI mode (export to file):
+CLI mode:
   --url <url>    Full report URL (copy from browser address bar)
-  -o <file>      Output file path  (e.g. report.xls)
+  -o <file>      Output file path (e.g. report.json); omit to print JSON to stdout
 
 Server mode (REST API):
   --server       Start HTTP server instead of CLI export
@@ -35,7 +35,7 @@ Server mode (REST API):
 
   POST /report   JSON body: { "url": "<report-url>" }
                  Header:    Authorization: Bearer <pat>
-                 Returns:   { "report": "<base64-encoded-xls>" }
+                 Returns:   { "report": { "Display Name": hours, ... } }
   GET  /health   Returns:   { "status": "ok" }
 
 Authentication:
@@ -43,7 +43,7 @@ Authentication:
   In server mode, use the Authorization: Bearer <pat> header.
 
 Examples:
-  node export-report.js --url "https://jira.example.com/plugins/servlet/timereports?reportKey=jira-timesheet-plugin:timereportstt#!/?filterOrProjectId=filter_43643&startDate=2026-02-01&endDate=2026-02-28&groupByField=workeduser&sum=month&user=John.Doe&view=month&export=html" --token your-token -o feb-report.xls
+  node export-report.js --url "https://jira.example.com/plugins/servlet/timereports?reportKey=jira-timesheet-plugin:timereportstt#!/?filterOrProjectId=filter_43643&startDate=2026-02-01&endDate=2026-02-28&groupByField=workeduser&sum=month&user=John.Doe&view=month&export=html" --token your-token -o feb-report.json
   node export-report.js --server --port 8080
 `);
 }
@@ -64,7 +64,7 @@ function parseArgs() {
         process.exit(0);
     }
   }
-  if (!opts.server && (!opts.url || !opts.output)) {
+  if (!opts.server && !opts.url) {
     printHelp();
     process.exit(1);
   }
@@ -310,72 +310,19 @@ function processWorklogs(issues, startDate, endDate, targetUsers) {
   return { grouped, months };
 }
 
-// ---- HTML/XLS generation ---------------------------------------------------
+// ---- JSON report generation ------------------------------------------------
 
-function generateHtml(reportParams, grouped, months) {
-  const { startDate, endDate, users, filterId } = reportParams;
-  const monthHeaders = months.map(m =>
-    `<th style="padding:6px 12px;text-align:right">${escapeHtml(getMonthLabel(m))}</th>`
-  ).join('');
-
-  let rows = '';
-
+function buildJsonReport(grouped) {
+  const report = {};
   for (const [displayName, issues] of Object.entries(grouped)) {
-    const userMonths = {};
-
-    for (const [, data] of Object.entries(issues)) {
-      for (const m of months) {
-        const sec = data.months[m] || 0;
-        userMonths[m] = (userMonths[m] || 0) + sec;
-      }
+    let totalSeconds = 0;
+    for (const data of Object.values(issues)) {
+      totalSeconds += data.total;
     }
-
-    const monthCells = months.map(m =>
-      `<td style="text-align:right;padding:6px 12px">${(userMonths[m] || 0) > 0 ? escapeHtml(formatHours(userMonths[m])) : ''}</td>`
-    ).join('');
-
-    rows += `      <tr>
-        <td style="padding:6px 12px">${escapeHtml(displayName)}</td>
-        ${monthCells}
-      </tr>\n`;
+    const hours = Math.round((totalSeconds / 3600) * 100) / 100;
+    report[displayName] = hours;
   }
-
-  const table = `
-    <table border="1" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:10pt">
-      <tr style="background:#4472C4;color:#fff">
-        <th style="padding:6px 12px;text-align:left"></th>
-        ${monthHeaders}
-      </tr>
-${rows}
-    </table>`;
-
-  return table;
-}
-
-function wrapAsExcelHtml(tableHtml) {
-  return `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
-<meta http-equiv="content-type" content="application/vnd.ms-excel; charset=utf-8">
-<head>
-<!--[if gte mso 9]>
-<xml>
-<x:ExcelWorkbook>
-<x:ExcelWorksheets>
-<x:ExcelWorksheet>
-<x:Name>Timesheet</x:Name>
-<x:WorksheetOptions>
-<x:DisplayGridlines/>
-</x:WorksheetOptions>
-</x:ExcelWorksheet>
-</x:ExcelWorksheets>
-</x:ExcelWorkbook>
-</xml>
-<![endif]-->
-</head>
-<body>
-${tableHtml}
-</body>
-</html>
-`;
+  return report;
 }
 
 // ---- Report core -----------------------------------------------------------
@@ -420,12 +367,11 @@ async function generateReport({ url, token, quiet }) {
 
   // 3. Process worklogs
   if (!quiet) console.log('Processing worklogs...');
-  const { grouped, months } = processWorklogs(issues, params.startDate, params.endDate, params.users);
+  const { grouped } = processWorklogs(issues, params.startDate, params.endDate, params.users);
 
-  // 4. Generate export
+  // 4. Build JSON report
   if (!quiet) console.log('Generating report...');
-  const tableHtml = generateHtml(params, grouped, months);
-  return wrapAsExcelHtml(tableHtml);
+  return buildJsonReport(grouped);
 }
 
 // ---- HTTP Server -----------------------------------------------------------
@@ -497,9 +443,8 @@ function startServer(opts) {
         }
 
         try {
-          const html = await generateReport({ url, token, quiet: true });
-          const base64 = Buffer.from(html, 'utf-8').toString('base64');
-          sendJson(200, { report: base64 });
+          const report = await generateReport({ url, token, quiet: true });
+          sendJson(200, { report });
         } catch (err) {
           const msg = err.message || 'Internal server error';
           const status = msg.includes('(401)') ? 401
@@ -544,19 +489,19 @@ async function main() {
     return;
   }
 
-  const startTime = process.hrtime.bigint();
-  console.log(`Output     : ${opts.output}`);
-  const fileContent = await generateReport({ url: opts.url, token: opts.token, quiet: false });
+  const quiet = !opts.output;
+  const report = await generateReport({ url: opts.url, token: opts.token, quiet });
 
-  // Write to file
-  const outputDir = path.dirname(path.resolve(opts.output));
-  if (outputDir && !fs.existsSync(outputDir)) {
-    fs.mkdirSync(outputDir, { recursive: true });
+  if (opts.output) {
+    const outputDir = path.dirname(path.resolve(opts.output));
+    if (outputDir && !fs.existsSync(outputDir)) {
+      fs.mkdirSync(outputDir, { recursive: true });
+    }
+    fs.writeFileSync(opts.output, JSON.stringify(report, null, 2) + '\n', 'utf-8');
+    console.log(`Done! Report saved to: ${path.resolve(opts.output)}`);
+  } else {
+    process.stdout.write(JSON.stringify(report, null, 2) + '\n');
   }
-  fs.writeFileSync(opts.output, fileContent, 'utf-8');
-  const elapsed = Number(process.hrtime.bigint() - startTime) / 1e9;
-  console.log(`\nDone! Report saved to: ${path.resolve(opts.output)}`);
-  console.log(`Generated in ${elapsed.toFixed(2)}s`);
 }
 
 if (require.main === module) {
@@ -575,8 +520,7 @@ module.exports = {
   formatHours,
   escapeHtml,
   processWorklogs,
-  generateHtml,
-  wrapAsExcelHtml,
+  buildJsonReport,
   generateReport,
   startServer,
 };

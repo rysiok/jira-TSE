@@ -7,7 +7,8 @@ Standalone Node.js tool that exports **Jira Time Tracker Flexible Report** data 
 ### CLI mode
 
 ```bash
-node export-report.js --url "<report-url>" --token <pat> -o output.xls
+node export-report.js --url "<report-url>" --token <pat> -o output.json
+node export-report.js --url "<report-url>" --token <pat>   # prints JSON to stdout
 ```
 
 Copy the full report URL from your browser address bar (including the `#!/?...` hash parameters) and pass it directly. Works with both root-level Jira instances (e.g. `https://jira.example.com/plugins/servlet/...`) and those deployed at a subpath (e.g. `https://jira.example.com/jira/plugins/servlet/...`).
@@ -38,11 +39,11 @@ Provide it via:
 ## Usage
 
 ```
-CLI mode (export to file):
-  node export-report.js --url "<report-url>" -o <output-file>
+CLI mode:
+  node export-report.js --url "<report-url>" [-o <output-file>]
 
   --url <url>    Full report URL (copy from browser address bar)
-  -o <file>      Output file path  (e.g. report.xls)
+  -o <file>      Output file path (e.g. report.json); omit to print JSON to stdout
   --token <pat>  Personal Access Token (or set JIRA_PAT env var)
 
 Server mode (REST API):
@@ -59,7 +60,7 @@ Other:
 
 ### `POST /report`
 
-Generate a report and return it as base64-encoded content.
+Generate a report and return it as JSON.
 
 **Request:**
 ```bash
@@ -72,11 +73,14 @@ curl -X POST http://localhost:3000/report \
 **Response (200):**
 ```json
 {
-  "report": "PGh0bWwgeG1sbnM6bz0i..." 
+  "report": {
+    "John Doe": 118.5,
+    "Smith, Jane": 96.25
+  }
 }
 ```
 
-The `report` field contains the XLS file content as a base64-encoded string. Decode it to get the HTML-based `.xls` file.
+The `report` field contains a JSON object mapping Jira display names to total hours worked.
 
 **Error responses:**
 - `400` — missing/invalid fields, invalid URL, bad Jira request
@@ -103,29 +107,29 @@ Health check endpoint for Docker/orchestrator probes.
 node export-report.js \
   --url "https://jira.example.com/plugins/servlet/timereports?reportKey=jira-timesheet-plugin:timereportstt#!/?filterOrProjectId=filter_43643&startDate=2026-02-01&endDate=2026-02-28&groupByField=workeduser&sum=month&user=John.Doe&view=month&export=html" \
   --token my-pat-token \
-  -o feb-2026.xls
+  -o feb-2026.json
 
 # Multiple users (comma-separated in the URL)
 node export-report.js \
   --url "https://jira.example.com/...#!/?...&user=John.Doe,Jane.Smith&..." \
   --token my-pat-token \
-  -o team-report.xls
+  -o team-report.json
 
 # All users (use allUsers=true instead of user=...)
 node export-report.js \
   --url "https://jira.example.com/...#!/?...&allUsers=true&..." \
   --token my-pat-token \
-  -o all-users-report.xls
+  -o all-users-report.json
 
 # Using environment variable for the token
 export JIRA_PAT=my-pat-token
-node export-report.js --url "..." -o report.xls
+node export-report.js --url "..." -o report.json
 ```
 
 On Windows (PowerShell):
 ```powershell
 $env:JIRA_PAT="my-pat-token"
-node export-report.js --url "..." -o report.xls
+node export-report.js --url "..." -o report.json
 ```
 
 ### Server
@@ -140,13 +144,13 @@ curl -X POST http://localhost:8080/report \
   -H "Authorization: Bearer my-pat-token" \
   -d '{"url": "https://jira.example.com/...#!/?..."}'
 
-# Decode the base64 response to a file
+# Save report to file
 curl -s -X POST http://localhost:8080/report \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer my-pat-token" \
   -d '{"url": "..."}' \
-  | node -e "process.stdin.on('data',d=>{const r=JSON.parse(d);process.stdout.write(Buffer.from(r.report,'base64'))})" \
-  > report.xls
+  | node -e "process.stdin.on('data',d=>{const r=JSON.parse(d);process.stdout.write(JSON.stringify(r.report,null,2))})" \
+  > report.json
 ```
 
 ### Docker
@@ -164,17 +168,24 @@ docker run -p 8080:8080 -e PORT=8080 jira-tse
 1. Parses the report URL to extract Jira base URL (including any context path like `/jira`), filter ID, date range, users, and grouping parameters
 2. Calls Jira REST API v2 (`/rest/api/2/search`) with the equivalent JQL query
 3. Fetches full worklogs for issues where inline worklog data is truncated (handles pagination for >1000 entries); shows progress as percentage (CLI mode)
-4. Aggregates worklogs by user and month
-5. Generates an HTML-based `.xls` file with a per-user summary table
-6. In CLI mode: writes to disk and prints generation time
-7. In server mode: returns base64-encoded content in JSON response
+4. Aggregates worklogs by user
+5. Generates a JSON report mapping display names to total hours
+6. In CLI mode: writes JSON to disk and prints generation time
+7. In server mode: returns JSON report in `{ "report": { ... } }` response
 
 ## Output format
 
-The generated `.xls` file is an HTML table wrapped in Excel-compatible markup. It opens in Excel, LibreOffice Calc, and Google Sheets.
+The output is a JSON object with one entry per user:
 
-- One row per user with per-month hour columns
-- Hours formatted as Polish locale decimals (e.g. `118,00` / `110,37`)
+```json
+{
+  "John Doe": 118.5,
+  "Jane Smith": 96.25
+}
+```
+
+- Keys use the original display name from the Jira API
+- Values are total hours worked, rounded to two decimal places
 - Supports single user, multiple users (comma-separated), or all users (`allUsers=true`)
 
 ## Requirements

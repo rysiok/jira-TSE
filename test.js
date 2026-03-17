@@ -19,8 +19,7 @@ const {
   formatHours,
   escapeHtml,
   processWorklogs,
-  generateHtml,
-  wrapAsExcelHtml,
+  buildJsonReport,
   startServer,
 } = require('./export-report.js');
 
@@ -264,58 +263,47 @@ describe('processWorklogs', () => {
   });
 });
 
-// ---- HTML generation tests -------------------------------------------------
+// ---- JSON report generation tests ------------------------------------------
 
-describe('generateHtml', () => {
-  it('produces HTML table with user rows and month columns', () => {
-    const params = { startDate: '2026-02-01', endDate: '2026-02-28', users: [], filterId: '123' };
+describe('buildJsonReport', () => {
+  it('aggregates hours per user using original display name', () => {
     const grouped = {
       'John Doe': {
         'PROJ-1': { summary: 'Task', project: 'PROJ', months: { '2026-02': 7200 }, total: 7200 },
+        'PROJ-2': { summary: 'Task2', project: 'PROJ', months: { '2026-02': 3600 }, total: 3600 },
       },
     };
-    const months = ['2026-02'];
-
-    const html = generateHtml(params, grouped, months);
-    assert.ok(html.includes('<table'));
-    assert.ok(html.includes('John Doe'));
-    assert.ok(html.includes('Feb 2026'));
-    // Should contain formatted hours (2,00 or 2.00 depending on locale)
-    assert.match(html, /2[,.]00/);
+    const report = buildJsonReport(grouped);
+    assert.deepEqual(report, { 'John Doe': 3 });
   });
 
-  it('escapes user names in output', () => {
-    const params = { startDate: '2026-02-01', endDate: '2026-02-28', users: [], filterId: '123' };
+  it('handles multiple users', () => {
     const grouped = {
-      '<script>alert("xss")</script>': {
-        'PROJ-1': { summary: 'Test', project: 'PROJ', months: { '2026-02': 3600 }, total: 3600 },
+      'Alice A': {
+        'X-1': { summary: 'T', project: 'X', months: { '2026-02': 5400 }, total: 5400 },
+      },
+      'Bob B': {
+        'X-2': { summary: 'T', project: 'X', months: { '2026-02': 9000 }, total: 9000 },
       },
     };
-    const html = generateHtml(params, grouped, ['2026-02']);
-    assert.ok(!html.includes('<script>'));
-    assert.ok(html.includes('&lt;script&gt;'));
+    const report = buildJsonReport(grouped);
+    assert.equal(report['Alice A'], 1.5);
+    assert.equal(report['Bob B'], 2.5);
   });
 
-  it('handles multiple months', () => {
-    const params = { startDate: '2026-02-01', endDate: '2026-03-31', users: [], filterId: '123' };
+  it('rounds to two decimal places', () => {
     const grouped = {
-      'User': {
-        'X-1': { summary: 'T', project: 'X', months: { '2026-02': 3600, '2026-03': 7200 }, total: 10800 },
+      'Test User': {
+        'X-1': { summary: 'T', project: 'X', months: { '2026-02': 1234 }, total: 1234 },
       },
     };
-    const html = generateHtml(params, grouped, ['2026-02', '2026-03']);
-    assert.ok(html.includes('Feb 2026'));
-    assert.ok(html.includes('Mar 2026'));
+    const report = buildJsonReport(grouped);
+    // 1234 / 3600 = 0.342777... → 0.34
+    assert.equal(report['Test User'], 0.34);
   });
-});
 
-describe('wrapAsExcelHtml', () => {
-  it('wraps content in Excel-compatible HTML', () => {
-    const result = wrapAsExcelHtml('<table>test</table>');
-    assert.ok(result.includes('xmlns:x="urn:schemas-microsoft-com:office:excel"'));
-    assert.ok(result.includes('<x:Name>Timesheet</x:Name>'));
-    assert.ok(result.includes('<table>test</table>'));
-    assert.ok(result.includes('charset=utf-8'));
+  it('returns empty object for no data', () => {
+    assert.deepEqual(buildJsonReport({}), {});
   });
 });
 
@@ -474,9 +462,8 @@ describe('REST API', () => {
 
             try {
               const { generateReport } = require('./export-report.js');
-              const html = await generateReport({ url, token, quiet: true });
-              const base64 = Buffer.from(html, 'utf-8').toString('base64');
-              sendJson(200, { report: base64 });
+              const report = await generateReport({ url, token, quiet: true });
+              sendJson(200, { report });
             } catch (err) {
               const msg = err.message || 'Internal server error';
               const status = msg.includes('(401)') ? 401 : msg.includes('(403)') ? 403 : msg.includes('HTTP 400') ? 400 : 500;
@@ -589,7 +576,7 @@ describe('REST API', () => {
   });
 
   describe('POST /report with mocked Jira', () => {
-    it('returns base64-encoded report for valid request', async () => {
+    it('returns JSON report for valid request', async () => {
       const p = await ensureAppServer();
       const jiraUrl = `https://localhost:${server.jiraPort}/plugins/servlet/timereports?reportKey=test#!/?filterOrProjectId=filter_100&startDate=2026-02-01&endDate=2026-02-28&groupByField=workeduser&sum=month&user=John.Doe&view=month&export=html`;
       const res = await request('POST', '/report', { url: jiraUrl }, p, { 'Authorization': 'Bearer test-token' });
@@ -676,38 +663,30 @@ describe('generateReport integration', () => {
     if (fakeJira) await new Promise(r => fakeJira.close(r));
   });
 
-  it('generates valid Excel HTML from mocked Jira data', async () => {
+  it('generates JSON report from mocked Jira data', async () => {
     // Build URL pointing to fake Jira (using http:// since it's a local test server)
     const url = `http://localhost:${jiraPort}/plugins/servlet/timereports?reportKey=test#!/?filterOrProjectId=filter_100&startDate=2026-02-01&endDate=2026-02-28&groupByField=workeduser&sum=month&user=alice&view=month&export=html`;
 
     const { generateReport } = require('./export-report.js');
-    const html = await generateReport({ url, token: 'test-token', quiet: true });
+    const report = await generateReport({ url, token: 'test-token', quiet: true });
 
-    // Verify it's valid Excel-wrapped HTML
-    assert.ok(html.includes('xmlns:x="urn:schemas-microsoft-com:office:excel"'));
-    assert.ok(html.includes('<x:Name>Timesheet</x:Name>'));
-
-    // Verify user data appears
-    assert.ok(html.includes('Alice A'));
-
-    // Verify month header
-    assert.ok(html.includes('Feb 2026'));
+    // Verify it's a JSON object with display name keys
+    assert.equal(typeof report, 'object');
+    assert.ok(report['Alice A'] !== undefined);
 
     // Verify hours calculation: Alice total = 3600+7200+5400 = 16200s = 4.5h
-    // The report shows per-user totals per month, should show "4,50" (Polish locale)
-    assert.match(html, /4[,.]50/);
+    assert.equal(report['Alice A'], 4.5);
   });
 
-  it('returns base64-decodable content', async () => {
+  it('returns serializable JSON', async () => {
     const url = `http://localhost:${jiraPort}/plugins/servlet/timereports?reportKey=test#!/?filterOrProjectId=filter_100&startDate=2026-02-01&endDate=2026-02-28&groupByField=workeduser&sum=month&user=alice&view=month&export=html`;
 
     const { generateReport } = require('./export-report.js');
-    const html = await generateReport({ url, token: 'test-token', quiet: true });
-    const base64 = Buffer.from(html, 'utf-8').toString('base64');
-    const decoded = Buffer.from(base64, 'base64').toString('utf-8');
+    const report = await generateReport({ url, token: 'test-token', quiet: true });
+    const json = JSON.stringify(report);
+    const parsed = JSON.parse(json);
 
-    assert.equal(decoded, html);
-    assert.ok(decoded.includes('<html'));
+    assert.deepEqual(parsed, report);
   });
 
   it('rejects with clear auth error for invalid token', async () => {

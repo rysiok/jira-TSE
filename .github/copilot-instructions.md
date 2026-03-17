@@ -2,17 +2,17 @@
 
 ## Project overview
 Single-file Node.js tool that exports Jira Time Tracker Flexible Report data via REST API.
-Dual-mode: CLI tool (export to file) and HTTP REST API server (returns base64 JSON).
+Dual-mode: CLI tool (export to file) and HTTP REST API server (returns JSON).
 **Zero dependencies** — uses only Node.js built-in modules (`https`, `http`, `fs`, `path`).
 
 ## Architecture
-- `export-report.js` — the entire application (CLI, HTTP server, Jira API client, HTML/XLS generation)
+- `export-report.js` — the entire application (CLI, HTTP server, Jira API client, JSON report generation)
 - `Dockerfile` — minimal Alpine container running the server
-- `generateReport({ url, token, quiet })` — core async function shared by CLI and server
+- `generateReport({ url, token, quiet })` — core async function shared by CLI and server; returns `{ "Display Name": hours }` JSON object
 - `main()` — thin CLI wrapper: parses args, calls `generateReport()`, writes file
 - `startServer(opts)` — HTTP server: `POST /report` and `GET /health`
 - Calls Jira REST API v2 (`/rest/api/2/search`, `/rest/api/2/issue/{key}/worklog`) with Bearer PAT auth
-- Generates HTML-based `.xls` files with a per-user summary table (hours in Polish locale decimals)
+- Generates JSON output with per-user total hours in `"Display Name": hours` format
 - Supports multiple comma-separated users from the report URL
 - Supports Jira instances at a subpath (e.g. `https://host/jira/plugins/servlet/...`)
 
@@ -30,7 +30,8 @@ Dual-mode: CLI tool (export to file) and HTTP REST API server (returns base64 JS
 ## Running
 ```bash
 # CLI mode
-node export-report.js --url "<jira-report-url>" --token <pat> -o output.xls
+node export-report.js --url "<jira-report-url>" --token <pat> -o output.json
+node export-report.js --url "<jira-report-url>" --token <pat>  # prints JSON to stdout
 node export-report.js --help
 
 # Server mode
@@ -50,7 +51,7 @@ node --test test.js             # run all 46 tests
 Manual verification:
 ```bash
 node export-report.js --help          # should print usage and exit 0
-node export-report.js --url "..." --token <pat> -o test.xls  # should produce valid .xls
+node export-report.js --url "..." --token <pat> -o test.json  # should produce valid .json
 node export-report.js --server        # should start on port 3000
 curl http://localhost:3000/health      # should return {"status":"ok"}
 curl -X POST http://localhost:3000/report -H "Content-Type: application/json" -d '{"url":"...","token":"..."}'
