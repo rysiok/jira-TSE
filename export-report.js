@@ -35,7 +35,7 @@ Server mode (REST API):
 
   POST /report   JSON body: { "url": "<report-url>" }
                  Header:    Authorization: Bearer <pat>
-                 Returns:   { "report": { "Display Name": hours, ... } }
+                 Returns:   { "Display Name": hours, ... }
   GET  /health   Returns:   { "status": "ok" }
 
 Authentication:
@@ -444,7 +444,7 @@ function startServer(opts) {
 
         try {
           const report = await generateReport({ url, token, quiet: true });
-          sendJson(200, { report });
+          sendJson(200, report);
         } catch (err) {
           const msg = err.message || 'Internal server error';
           const status = msg.includes('(401)') ? 401
