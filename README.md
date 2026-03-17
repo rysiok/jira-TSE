@@ -179,3 +179,13 @@ The generated `.xls` file is an HTML table wrapped in Excel-compatible markup. I
 
 - Node.js 18+ (no npm install needed)
 - Docker (optional, for containerized deployment)
+
+## Testing
+
+Unit tests use Node.js built-in test runner (`node:test`) — zero dependencies:
+
+```bash
+node --test test.js
+```
+
+Covers: URL parsing, date utilities, HTML escaping, worklog aggregation, HTML/Excel generation, REST API validation (health, 404, input checks, SSRF), and end-to-end report generation with a mocked Jira server.

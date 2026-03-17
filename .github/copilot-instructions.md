@@ -37,7 +37,12 @@ docker run -p 3000:3000 jira-tse
 ```
 
 ## Testing
-No test framework. Verify manually:
+Unit tests use Node.js built-in test runner (`node:test`) — zero dependencies.
+```bash
+node --test test.js             # run all 44 tests
+```
+
+Manual verification:
 ```bash
 node export-report.js --help          # should print usage and exit 0
 node export-report.js --url "..." --token <pat> -o test.xls  # should produce valid .xls
