@@ -473,9 +473,9 @@ function startServer(opts) {
           sendJson(200, { report: base64 });
         } catch (err) {
           const msg = err.message || 'Internal server error';
-          const status = msg.includes('401') ? 401
-            : msg.includes('403') ? 403
-            : msg.includes('400') ? 400
+          const status = msg.includes('(401)') ? 401
+            : msg.includes('(403)') ? 403
+            : msg.includes('HTTP 400') ? 400
             : 500;
           sendJson(status, { error: msg });
         }
