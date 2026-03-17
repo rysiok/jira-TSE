@@ -10,7 +10,7 @@ Standalone Node.js tool that exports **Jira Time Tracker Flexible Report** data 
 node export-report.js --url "<report-url>" --token <pat> -o output.xls
 ```
 
-Copy the full report URL from your browser address bar (including the `#!/?...` hash parameters) and pass it directly.
+Copy the full report URL from your browser address bar (including the `#!/?...` hash parameters) and pass it directly. Works with both root-level Jira instances (e.g. `https://jira.example.com/plugins/servlet/...`) and those deployed at a subpath (e.g. `https://jira.example.com/jira/plugins/servlet/...`).
 
 ### Server mode
 
@@ -64,7 +64,7 @@ Generate a report and return it as base64-encoded content.
 **Request body:**
 ```json
 {
-  "url": "https://jira.example.com/plugins/servlet/timereports?reportKey=...#!/?filterOrProjectId=filter_43643&startDate=2026-02-01&endDate=2026-02-28&...",
+  "url": "https://jira.example.com/jira/plugins/servlet/timereports?reportKey=...#!/?filterOrProjectId=filter_43643&startDate=2026-02-01&endDate=2026-02-28&...",
   "token": "your-personal-access-token"
 }
 ```
@@ -159,7 +159,7 @@ docker run -p 8080:8080 -e PORT=8080 jira-tse
 
 ## How it works
 
-1. Parses the report URL to extract Jira origin, filter ID, date range, users, and grouping parameters
+1. Parses the report URL to extract Jira base URL (including any context path like `/jira`), filter ID, date range, users, and grouping parameters
 2. Calls Jira REST API v2 (`/rest/api/2/search`) with the equivalent JQL query
 3. Fetches full worklogs for issues where inline worklog data is truncated (handles pagination for >1000 entries); shows progress as percentage (CLI mode)
 4. Aggregates worklogs by user and month

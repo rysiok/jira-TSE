@@ -14,6 +14,7 @@ Dual-mode: CLI tool (export to file) and HTTP REST API server (returns base64 JS
 - Calls Jira REST API v2 (`/rest/api/2/search`, `/rest/api/2/issue/{key}/worklog`) with Bearer PAT auth
 - Generates HTML-based `.xls` files with a per-user summary table (hours in Polish locale decimals)
 - Supports multiple comma-separated users from the report URL
+- Supports Jira instances at a subpath (e.g. `https://host/jira/plugins/servlet/...`)
 
 ## Key conventions
 - **No dependencies**: never add npm packages or `package.json`. All code must use Node.js built-ins only.
@@ -21,6 +22,10 @@ Dual-mode: CLI tool (export to file) and HTTP REST API server (returns base64 JS
 - **Auth**: PAT (Personal Access Token) only, via `--token` flag, `JIRA_PAT` env var, or `token` in request body.
 - **HTML escaping**: always use `escapeHtml()` for any user-supplied or API-returned data rendered in output.
 - **Security**: do not log sensitive info (e.g. tokens), and handle errors gracefully without exposing stack traces or internal details; do not commit any secrets. Validate `url` starts with `https://` in server mode to prevent SSRF.
+- **Security**: never add .env file to repository. Do not commit any secrets. Add .env to .gitignore.
+- **Pushing to GitHub**: commit all changes with clear messages, and push to the `main` branch. Do not create branches or pull requests. Do not delete or rewrite history. 
+- **Testing**: write unit tests using Node.js built-in test runner (`node:test`) in `test.js`. Cover core logic and edge cases. Run tests with `node --test test.js` before pushing.
+- **Documentation**: keep `README.md` and `copilot-instructions.md` up to date with usage instructions, examples, and testing steps. Do not remove or significantly alter existing documentation. Update documentation before pushing any changes that affect usage or behavior.
 
 ## Running
 ```bash
@@ -39,7 +44,7 @@ docker run -p 3000:3000 jira-tse
 ## Testing
 Unit tests use Node.js built-in test runner (`node:test`) — zero dependencies.
 ```bash
-node --test test.js             # run all 44 tests
+node --test test.js             # run all 46 tests
 ```
 
 Manual verification:

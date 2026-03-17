@@ -74,11 +74,16 @@ function parseArgs() {
 function parseReportUrl(rawUrl) {
   // The URL has a hash-bang (#!) section with query parameters.
   // Example: https://host/plugins/servlet/timereports?reportKey=...#!/?filterOrProjectId=filter_43643&startDate=...
+  // Supports Jira instances at a subpath, e.g. https://host/jira/plugins/servlet/timereports?...
   const hashIdx = rawUrl.indexOf('#!/');
   if (hashIdx < 0) throw new Error('URL does not contain #!/ hash-bang section');
 
   const baseUrl = rawUrl.substring(0, hashIdx).split('?')[0];
-  const origin = new URL(baseUrl).origin;
+  // Extract origin including any Jira context path (e.g. /jira)
+  const servletIdx = baseUrl.indexOf('/plugins/servlet/');
+  const origin = servletIdx > 0
+    ? baseUrl.substring(0, servletIdx)
+    : new URL(baseUrl).origin;
 
   const hashQuery = rawUrl.substring(hashIdx + 3); // after "#!/"
   const qIdx = hashQuery.indexOf('?');
@@ -170,6 +175,17 @@ async function jiraGet(origin, apiPath, headers) {
 }
 
 // ---- Jira data fetching ----------------------------------------------------
+
+async function verifyCredentials(origin, headers) {
+  // Quick auth check before making heavier API calls.
+  // Prevents misleading filter-related errors when the real problem is a bad token.
+  try {
+    await jiraGet(origin, '/rest/api/2/myself', headers);
+  } catch (err) {
+    if (err.message.includes('401') || err.message.includes('403')) throw err;
+    throw new Error('Authentication failed. Check your --token / JIRA_PAT value and Jira URL.');
+  }
+}
 
 async function searchIssues(origin, headers, filterId, startDate, endDate, users, quiet) {
   // Replicate the same JQL the plugin builds:
@@ -373,6 +389,11 @@ async function generateReport({ url, token, quiet }) {
     console.log(`Users      : ${params.users.length ? params.users.join(', ') : '(all)'}`);
     console.log();
   }
+
+  // 0. Verify credentials before proceeding
+  if (!quiet) process.stdout.write('Verifying credentials... ');
+  await verifyCredentials(params.origin, headers);
+  if (!quiet) console.log('OK');
 
   // 1. Search for issues with worklogs in the date range
   const issues = await searchIssues(

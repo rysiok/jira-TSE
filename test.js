@@ -73,6 +73,14 @@ describe('parseReportUrl', () => {
     assert.deepEqual(r.users, []);
   });
 
+  it('preserves context path for subpath Jira instances', () => {
+    const url = 'https://jira.example.com/jira/plugins/servlet/timereports?reportKey=jira-timesheet-plugin:timereportstt#!/?filterOrProjectId=filter_85267&startDate=2026-02-01&endDate=2026-02-28&groupByField=workeduser&view=month&sum=month&user=Alice,Bob&export=html';
+    const r = parseReportUrl(url);
+    assert.equal(r.origin, 'https://jira.example.com/jira');
+    assert.equal(r.filterId, '85267');
+    assert.deepEqual(r.users, ['Alice', 'Bob']);
+  });
+
   it('throws on missing hash-bang', () => {
     assert.throws(
       () => parseReportUrl('https://jira.example.com/page'),
@@ -322,7 +330,10 @@ describe('REST API', () => {
     // We need to mock the Jira HTTP calls. We'll create a fake Jira server
     // that returns predictable responses.
     const fakeJira = http.createServer((req, res) => {
-      if (req.url.includes('/rest/api/2/search')) {
+      if (req.url.includes('/rest/api/2/myself')) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ name: 'testuser', displayName: 'Test User' }));
+      } else if (req.url.includes('/rest/api/2/search')) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           total: 1,
@@ -590,7 +601,9 @@ describe('generateReport integration', () => {
     fakeJira = http.createServer((req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
 
-      if (req.url.includes('/rest/api/2/search')) {
+      if (req.url.includes('/rest/api/2/myself')) {
+        res.end(JSON.stringify({ name: 'testuser', displayName: 'Test User' }));
+      } else if (req.url.includes('/rest/api/2/search')) {
         res.end(JSON.stringify({
           total: 2,
           issues: [
@@ -676,5 +689,31 @@ describe('generateReport integration', () => {
 
     assert.equal(decoded, html);
     assert.ok(decoded.includes('<html'));
+  });
+
+  it('rejects with clear auth error for invalid token', async () => {
+    // Create a Jira server that returns 401 on /myself
+    const badJira = http.createServer((req, res) => {
+      if (req.url.includes('/rest/api/2/myself')) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ message: 'Unauthorized' }));
+      } else {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ total: 0, issues: [] }));
+      }
+    });
+
+    await new Promise(resolve => badJira.listen(0, resolve));
+    const badPort = badJira.address().port;
+
+    const url = `http://localhost:${badPort}/plugins/servlet/timereports?reportKey=test#!/?filterOrProjectId=filter_100&startDate=2026-02-01&endDate=2026-02-28&groupByField=workeduser&sum=month&user=alice&view=month&export=html`;
+
+    const { generateReport } = require('./export-report.js');
+    await assert.rejects(
+      () => generateReport({ url, token: 'bad-token', quiet: true }),
+      /[Aa]uthentication failed/
+    );
+
+    await new Promise(r => badJira.close(r));
   });
 });
