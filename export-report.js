@@ -94,6 +94,7 @@ function parseReportUrl(rawUrl) {
 
   const filterOrProjectId = params.get('filterOrProjectId') || '';
   const filterId = filterOrProjectId.replace(/^filter_/, '');
+  if (!/^\d+$/.test(filterId)) throw new Error('Invalid filterId: must be numeric');
 
   return {
     origin,
@@ -124,15 +125,28 @@ function buildAuthHeaders(token) {
   return headers;
 }
 
-function httpGet(url, headers) {
+const MAX_REDIRECTS = 5;
+const REQUEST_TIMEOUT_MS = 30000;
+
+function httpGet(url, headers, _redirectCount) {
+  const redirectCount = _redirectCount || 0;
   return new Promise((resolve, reject) => {
+    if (redirectCount >= MAX_REDIRECTS) {
+      return reject(new Error('Too many redirects'));
+    }
     const lib = url.startsWith('https') ? https : http;
-    const req = lib.get(url, { headers }, (res) => {
+    const req = lib.get(url, { headers, timeout: REQUEST_TIMEOUT_MS }, (res) => {
       if (res.statusCode === 301 || res.statusCode === 302) {
         const location = res.headers.location;
         if (location) {
           const redirectUrl = location.startsWith('http') ? location : new URL(location, url).href;
-          return httpGet(redirectUrl, headers).then(resolve, reject);
+          // Strip Authorization header when redirecting to a different origin
+          const origOrigin = new URL(url).origin;
+          const newOrigin = new URL(redirectUrl).origin;
+          const redirectHeaders = origOrigin === newOrigin ? headers : Object.fromEntries(
+            Object.entries(headers).filter(([k]) => k.toLowerCase() !== 'authorization')
+          );
+          return httpGet(redirectUrl, redirectHeaders, redirectCount + 1).then(resolve, reject);
         }
       }
       const chunks = [];
@@ -166,6 +180,7 @@ function httpGet(url, headers) {
         resolve(body);
       });
     });
+    req.on('timeout', () => { req.destroy(); reject(new Error('Request timed out')); });
     req.on('error', reject);
   });
 }
@@ -198,7 +213,7 @@ async function searchIssues(origin, headers, filterId, startDate, endDate, users
 
   let jql = `filter=${filterId} and worklogDate >= "${dayBefore}" and worklogDate < "${dayAfter}"`;
   if (users.length > 0) {
-    const quoted = users.map(u => `"${u}"`).join(',');
+    const quoted = users.map(u => `"${u.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`).join(',');
     jql += ` and (worklogAuthor in (${quoted}))`;
   }
 
@@ -265,7 +280,7 @@ function formatHours(seconds) {
 
 function escapeHtml(str) {
   if (!str) return '';
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 function processWorklogs(issues, startDate, endDate, targetUsers) {
@@ -453,7 +468,9 @@ function startServer(opts) {
             : msg.includes('(403)') ? 403
             : msg.includes('HTTP 400') ? 400
             : 500;
-          sendJson(status, { error: msg });
+          // Don't leak internal details on 500 errors
+          const safeMsg = status === 500 ? 'Internal server error' : msg;
+          sendJson(status, { error: safeMsg });
         }
       });
 

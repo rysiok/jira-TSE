@@ -86,6 +86,22 @@ describe('parseReportUrl', () => {
       /hash-bang/
     );
   });
+
+  it('rejects non-numeric filterId', () => {
+    const url = SAMPLE_URL.replace('filter_43643', 'filter_abc" or project=SECRET');
+    assert.throws(
+      () => parseReportUrl(url),
+      /Invalid filterId/
+    );
+  });
+
+  it('rejects filterId with JQL injection attempt', () => {
+    const url = SAMPLE_URL.replace('filter_43643', 'filter_123 or 1=1');
+    assert.throws(
+      () => parseReportUrl(url),
+      /Invalid filterId/
+    );
+  });
 });
 
 describe('shiftDate', () => {
@@ -137,6 +153,10 @@ describe('formatHours', () => {
 describe('escapeHtml', () => {
   it('escapes special characters', () => {
     assert.equal(escapeHtml('<script>"alert&</script>'), '&lt;script&gt;&quot;alert&amp;&lt;/script&gt;');
+  });
+
+  it('escapes single quotes', () => {
+    assert.equal(escapeHtml("It's a test"), 'It&#39;s a test');
   });
 
   it('returns empty string for falsy input', () => {
@@ -473,7 +493,8 @@ describe('REST API', () => {
             } catch (err) {
               const msg = err.message || 'Internal server error';
               const status = msg.includes('(401)') ? 401 : msg.includes('(403)') ? 403 : msg.includes('HTTP 400') ? 400 : 500;
-              sendJson(status, { error: msg });
+              const safeMsg = status === 500 ? 'Internal server error' : msg;
+              sendJson(status, { error: safeMsg });
             }
           });
 
