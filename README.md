@@ -33,7 +33,7 @@ Generate one in Jira: **Profile → Personal Access Tokens → Create token**.
 
 Provide it via:
 - **CLI mode**: `--token <pat>` flag or `JIRA_PAT` environment variable
-- **Server mode**: `token` field in the JSON request body
+- **Server mode**: `Authorization: Bearer <pat>` header
 
 ## Usage
 
@@ -61,12 +61,12 @@ Other:
 
 Generate a report and return it as base64-encoded content.
 
-**Request body:**
-```json
-{
-  "url": "https://jira.example.com/jira/plugins/servlet/timereports?reportKey=...#!/?filterOrProjectId=filter_43643&startDate=2026-02-01&endDate=2026-02-28&...",
-  "token": "your-personal-access-token"
-}
+**Request:**
+```bash
+curl -X POST http://localhost:3000/report \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-personal-access-token" \
+  -d '{"url": "https://jira.example.com/jira/plugins/servlet/timereports?reportKey=...#!/?filterOrProjectId=filter_43643&startDate=2026-02-01&endDate=2026-02-28&..."}'
 ```
 
 **Response (200):**
@@ -80,7 +80,7 @@ The `report` field contains the XLS file content as a base64-encoded string. Dec
 
 **Error responses:**
 - `400` — missing/invalid fields, invalid URL, bad Jira request
-- `401` — authentication failed
+- `401` — authentication failed (missing or invalid token)
 - `403` — insufficient permissions
 - `413` — request body too large (>1 MB)
 - `500` — internal server error
@@ -137,12 +137,14 @@ node export-report.js --server --port 8080
 # Generate a report via curl
 curl -X POST http://localhost:8080/report \
   -H "Content-Type: application/json" \
-  -d '{"url": "https://jira.example.com/...#!/?...", "token": "my-pat-token"}'
+  -H "Authorization: Bearer my-pat-token" \
+  -d '{"url": "https://jira.example.com/...#!/?..."}'
 
 # Decode the base64 response to a file
 curl -s -X POST http://localhost:8080/report \
   -H "Content-Type: application/json" \
-  -d '{"url": "...", "token": "..."}' \
+  -H "Authorization: Bearer my-pat-token" \
+  -d '{"url": "..."}' \
   | node -e "process.stdin.on('data',d=>{const r=JSON.parse(d);process.stdout.write(Buffer.from(r.report,'base64'))})" \
   > report.xls
 ```

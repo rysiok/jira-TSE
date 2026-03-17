@@ -381,14 +381,14 @@ describe('REST API', () => {
   });
 
   // Helper to make HTTP requests
-  function request(method, path, body, reqPort) {
+  function request(method, path, body, reqPort, extraHeaders) {
     return new Promise((resolve, reject) => {
       const opts = {
         hostname: 'localhost',
         port: reqPort,
         path,
         method,
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...extraHeaders },
       };
       const req = http.request(opts, (res) => {
         const chunks = [];
@@ -462,10 +462,15 @@ describe('REST API', () => {
               return sendJson(400, { error: 'Invalid JSON body' });
             }
 
-            const { url, token } = body;
+            const { url } = body;
             if (!url || typeof url !== 'string') return sendJson(400, { error: 'Missing or invalid "url" field' });
-            if (!token || typeof token !== 'string') return sendJson(400, { error: 'Missing or invalid "token" field' });
             if (!url.startsWith('https://')) return sendJson(400, { error: '"url" must start with https://' });
+
+            const authHeader = req.headers['authorization'] || '';
+            const token = authHeader.startsWith('Bearer ')
+              ? authHeader.slice(7)
+              : '';
+            if (!token) return sendJson(401, { error: 'Missing token. Provide Authorization: Bearer <PAT> header.' });
 
             try {
               const { generateReport } = require('./export-report.js');
@@ -540,32 +545,46 @@ describe('REST API', () => {
       assert.match(res.body.error, /url/i);
     });
 
-    it('returns 400 when token is missing', async () => {
+    it('returns 401 when token is missing', async () => {
       const p = await ensureAppServer();
       const res = await request('POST', '/report', { url: 'https://x.com/#!/?a=b' }, p);
-      assert.equal(res.statusCode, 400);
+      assert.equal(res.statusCode, 401);
       assert.match(res.body.error, /token/i);
     });
 
     it('returns 400 when url does not start with https://', async () => {
       const p = await ensureAppServer();
-      const res = await request('POST', '/report', { url: 'http://evil.com/#!/?a=b', token: 'tok' }, p);
+      const res = await request('POST', '/report', { url: 'http://evil.com/#!/?a=b' }, p, { 'Authorization': 'Bearer tok' });
       assert.equal(res.statusCode, 400);
       assert.match(res.body.error, /https/);
     });
 
     it('returns 400 when url is not a string', async () => {
       const p = await ensureAppServer();
-      const res = await request('POST', '/report', { url: 123, token: 'tok' }, p);
+      const res = await request('POST', '/report', { url: 123 }, p, { 'Authorization': 'Bearer tok' });
       assert.equal(res.statusCode, 400);
       assert.match(res.body.error, /url/i);
     });
 
-    it('returns 400 when token is not a string', async () => {
+    it('returns 401 when Authorization header is missing', async () => {
       const p = await ensureAppServer();
-      const res = await request('POST', '/report', { url: 'https://x.com/#!/?a=b', token: 42 }, p);
-      assert.equal(res.statusCode, 400);
+      const res = await request('POST', '/report', { url: 'https://x.com/#!/?a=b' }, p);
+      assert.equal(res.statusCode, 401);
       assert.match(res.body.error, /token/i);
+    });
+
+    it('accepts token from Authorization header', async () => {
+      const p = await ensureAppServer();
+      const res = await request('POST', '/report', { url: 'https://x.com/#!/?a=b' }, p, { 'Authorization': 'Bearer test-pat' });
+      // Token is valid (string), so it proceeds past validation — will fail on Jira call (500)
+      assert.ok([200, 500].includes(res.statusCode));
+    });
+
+    it('ignores body token field', async () => {
+      const p = await ensureAppServer();
+      // Token in body only — should be rejected since header is required
+      const res = await request('POST', '/report', { url: 'https://x.com/#!/?a=b', token: 'body-tok' }, p);
+      assert.equal(res.statusCode, 401);
     });
   });
 
@@ -573,7 +592,7 @@ describe('REST API', () => {
     it('returns base64-encoded report for valid request', async () => {
       const p = await ensureAppServer();
       const jiraUrl = `https://localhost:${server.jiraPort}/plugins/servlet/timereports?reportKey=test#!/?filterOrProjectId=filter_100&startDate=2026-02-01&endDate=2026-02-28&groupByField=workeduser&sum=month&user=John.Doe&view=month&export=html`;
-      const res = await request('POST', '/report', { url: jiraUrl, token: 'test-token' }, p);
+      const res = await request('POST', '/report', { url: jiraUrl }, p, { 'Authorization': 'Bearer test-token' });
 
       // This will fail connecting to fake Jira via HTTPS (it's HTTP),
       // so we expect a 500 error. The validation tests above cover the logic.

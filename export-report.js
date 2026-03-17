@@ -33,12 +33,14 @@ Server mode (REST API):
   --server       Start HTTP server instead of CLI export
   --port <port>  Server port (default: 3000, or PORT env var)
 
-  POST /report   JSON body: { "url": "<report-url>", "token": "<pat>" }
+  POST /report   JSON body: { "url": "<report-url>" }
+                 Header:    Authorization: Bearer <pat>
                  Returns:   { "report": "<base64-encoded-xls>" }
   GET  /health   Returns:   { "status": "ok" }
 
 Authentication:
   --token <pat>      Personal Access Token (or set JIRA_PAT env var)
+  In server mode, use the Authorization: Bearer <pat> header.
 
 Examples:
   node export-report.js --url "https://jira.example.com/plugins/servlet/timereports?reportKey=jira-timesheet-plugin:timereportstt#!/?filterOrProjectId=filter_43643&startDate=2026-02-01&endDate=2026-02-28&groupByField=workeduser&sum=month&user=John.Doe&view=month&export=html" --token your-token -o feb-report.xls
@@ -477,15 +479,21 @@ function startServer(opts) {
           return sendJson(400, { error: 'Invalid JSON body' });
         }
 
-        const { url, token } = body;
+        const { url } = body;
         if (!url || typeof url !== 'string') {
           return sendJson(400, { error: 'Missing or invalid "url" field' });
         }
-        if (!token || typeof token !== 'string') {
-          return sendJson(400, { error: 'Missing or invalid "token" field' });
-        }
         if (!url.startsWith('https://')) {
           return sendJson(400, { error: '"url" must start with https://' });
+        }
+
+        // Token from Authorization: Bearer <PAT> header
+        const authHeader = req.headers['authorization'] || '';
+        const token = authHeader.startsWith('Bearer ')
+          ? authHeader.slice(7)
+          : '';
+        if (!token) {
+          return sendJson(401, { error: 'Missing token. Provide Authorization: Bearer <PAT> header.' });
         }
 
         try {

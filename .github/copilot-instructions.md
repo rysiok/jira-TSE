@@ -19,7 +19,7 @@ Dual-mode: CLI tool (export to file) and HTTP REST API server (returns base64 JS
 ## Key conventions
 - **No dependencies**: never add npm packages or `package.json`. All code must use Node.js built-ins only.
 - **Single file**: keep everything in `export-report.js`. Do not split into modules.
-- **Auth**: PAT (Personal Access Token) only, via `--token` flag, `JIRA_PAT` env var, or `token` in request body.
+- **Auth**: PAT (Personal Access Token) only, via `--token` flag, `JIRA_PAT` env var, or `Authorization: Bearer <PAT>` header (server mode).
 - **HTML escaping**: always use `escapeHtml()` for any user-supplied or API-returned data rendered in output.
 - **Security**: do not log sensitive info (e.g. tokens), and handle errors gracefully without exposing stack traces or internal details; do not commit any secrets. Validate `url` starts with `https://` in server mode to prevent SSRF.
 - **Security**: never add .env file to repository. Do not commit any secrets. Add .env to .gitignore.
