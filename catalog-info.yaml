@@ -1,0 +1,12 @@
+apiVersion: backstage.io/v1alpha1
+kind: System
+metadata:
+  name: jira-tse
+  description: Jira Timesheet Export — CLI tool and HTTP REST API server for exporting Jira Time Tracker Flexible Report data
+  annotations:
+    wolterskluwer.io/bit-id: "041800001D6F"
+    globalactions-optin: OrcaSAST,OrcaSCA
+spec:
+  type: service
+  lifecycle: support
+  owner: Ryszard.Krakowiak@wolterskluwer.com
