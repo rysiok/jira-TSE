@@ -115,6 +115,33 @@ Error:
 **Error responses:**
 - `404` — job not found (invalid ID or expired; jobs expire after 10 minutes)
 
+### `POST /report/sync`
+
+Generate a report synchronously — blocks until complete and returns the result directly. Use this when you don't want to deal with polling.
+
+**Request:**
+```bash
+curl -X POST http://localhost:3000/report/sync \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-personal-access-token" \
+  -d '{"url": "https://jira.example.com/...#!/?..."}'
+```
+
+**Response (200):**
+```json
+{
+  "john.doe": { "hours": 118.5, "email": "john.doe@example.com" },
+  "jane.smith": { "hours": 96.25, "email": "jane.smith@example.com" }
+}
+```
+
+**Error responses:**
+- `400` — missing/invalid fields, invalid URL, bad Jira request
+- `401` — authentication failed (missing or invalid token)
+- `403` — insufficient permissions
+- `413` — request body too large (>1 MB)
+- `500` — internal server error
+
 ### `GET /health`
 
 Health check endpoint for Docker/orchestrator probes.
@@ -164,7 +191,7 @@ node export-report.js --url "..." -o report.json
 # Start the server
 node export-report.js --server --port 8080
 
-# Submit a report job
+# Submit a report job (async)
 curl -X POST http://localhost:8080/report \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer my-pat-token" \
@@ -175,6 +202,13 @@ curl -X POST http://localhost:8080/report \
 curl http://localhost:8080/report/a1b2c3d4...
 # → {"jobId":"...","status":"pending"}       (still running)
 # → {"jobId":"...","status":"complete","report":{...}}  (done)
+
+# Or use the blocking endpoint (waits for result)
+curl -X POST http://localhost:8080/report/sync \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer my-pat-token" \
+  -d '{"url": "https://jira.example.com/...#!/?..."}'
+# → {"john.doe":{"hours":42.5,"email":"john@example.com"}, ...}
 ```
 
 ### Docker

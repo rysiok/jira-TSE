@@ -10,7 +10,7 @@ Dual-mode: CLI tool (export to file) and HTTP REST API server (returns JSON).
 - `Dockerfile` — minimal Alpine container running the server
 - `generateReport({ url, token, quiet })` — core async function shared by CLI and server; returns `{ "username": { hours, email } }` JSON object
 - `main()` — thin CLI wrapper: parses args, calls `generateReport()`, writes file
-- `startServer(opts)` — HTTP server with async polling: `POST /report` (returns jobId), `GET /report/<id>` (poll status), `GET /health`
+- `startServer(opts)` — HTTP server with async polling: `POST /report` (returns jobId), `GET /report/<id>` (poll status), `POST /report/sync` (blocking, returns report directly), `GET /health`
 - Calls Jira REST API v2 (`/rest/api/2/search`, `/rest/api/2/issue/{key}/worklog`) with Bearer PAT auth
 - Generates JSON output keyed by Jira username with `{ hours, email }` per user
 - Supports multiple comma-separated users from the report URL
@@ -58,4 +58,6 @@ curl -X POST http://localhost:3000/report -H "Content-Type: application/json" -H
 # → {"jobId":"..."}
 curl http://localhost:3000/report/<jobId>
 # → {"jobId":"...","status":"pending|complete|error",...}
+curl -X POST http://localhost:3000/report/sync -H "Content-Type: application/json" -H "Authorization: Bearer <pat>" -d '{"url":"https://..."}'
+# → {"username":{"hours":...,"email":"..."}, ...}
 ```

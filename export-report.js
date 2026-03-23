@@ -40,6 +40,10 @@ Server mode (REST API):
                       Returns:   202 { "jobId": "<id>" }
   GET  /report/<id>   Poll job status
                       Returns:   { "jobId", "status": "pending|complete|error", "report"?, "error"? }
+  POST /report/sync   Generate report and wait for result (blocking)
+                      JSON body: { "url": "<report-url>" }
+                      Header:    Authorization: Bearer <pat>
+                      Returns:   200 { "username": { hours, email }, ... }
   GET  /health        Returns:   { "status": "ok" }
 
 Authentication:
@@ -456,6 +460,52 @@ function startServer(opts) {
       return sendJson(200, result);
     }
 
+    // POST /report/sync — blocking: waits for result and returns report directly
+    if (req.method === 'POST' && req.url === '/report/sync') {
+      const chunks = [];
+      let size = 0;
+
+      req.on('data', (chunk) => {
+        size += chunk.length;
+        if (size <= MAX_BODY) chunks.push(chunk);
+      });
+
+      req.on('end', async () => {
+        if (size > MAX_BODY) return sendJson(413, { error: 'Request body too large' });
+
+        let body;
+        try {
+          body = JSON.parse(Buffer.concat(chunks).toString('utf-8'));
+        } catch {
+          return sendJson(400, { error: 'Invalid JSON body' });
+        }
+
+        const { url } = body;
+        if (!url || typeof url !== 'string') return sendJson(400, { error: 'Missing or invalid "url" field' });
+        if (!url.startsWith('https://')) return sendJson(400, { error: '"url" must start with https://' });
+
+        const authHeader = req.headers['authorization'] || '';
+        const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+        if (!token) return sendJson(401, { error: 'Missing token. Provide Authorization: Bearer <PAT> header.' });
+
+        try {
+          const report = await generateReport({ url, token, quiet: true });
+          sendJson(200, report);
+        } catch (err) {
+          const msg = err.message || 'Internal server error';
+          const status = msg.includes('(401)') ? 401
+            : msg.includes('(403)') ? 403
+            : msg.includes('HTTP 400') ? 400
+            : 500;
+          const safeMsg = status === 500 ? 'Internal server error' : msg;
+          sendJson(status, { error: safeMsg });
+        }
+      });
+
+      req.on('error', () => sendJson(500, { error: 'Request stream error' }));
+      return;
+    }
+
     // POST /report — submit async report job
     if (req.method === 'POST' && req.url === '/report') {
       const chunks = [];
@@ -543,6 +593,7 @@ function startServer(opts) {
     console.log(`Server listening on port ${port}`);
     console.log('  POST /report       — submit report job (returns jobId)');
     console.log('  GET  /report/<id>  — poll job status');
+    console.log('  POST /report/sync  — generate report (blocking)');
     console.log('  GET  /health       — health check');
   });
 }

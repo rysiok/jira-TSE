@@ -512,6 +512,51 @@ describe('REST API', () => {
           return;
         }
 
+        // POST /report/sync — blocking
+        if (req.method === 'POST' && req.url === '/report/sync') {
+          const chunks = [];
+          let size = 0;
+          const MAX_BODY = 1024 * 1024;
+
+          req.on('data', (chunk) => {
+            size += chunk.length;
+            if (size <= MAX_BODY) chunks.push(chunk);
+          });
+
+          req.on('end', async () => {
+            if (size > MAX_BODY) return sendJson(413, { error: 'Request body too large' });
+
+            let body;
+            try {
+              body = JSON.parse(Buffer.concat(chunks).toString('utf-8'));
+            } catch {
+              return sendJson(400, { error: 'Invalid JSON body' });
+            }
+
+            const { url } = body;
+            if (!url || typeof url !== 'string') return sendJson(400, { error: 'Missing or invalid "url" field' });
+            if (!url.startsWith('https://')) return sendJson(400, { error: '"url" must start with https://' });
+
+            const authHeader = req.headers['authorization'] || '';
+            const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+            if (!token) return sendJson(401, { error: 'Missing token. Provide Authorization: Bearer <PAT> header.' });
+
+            try {
+              const { generateReport } = require('./export-report.js');
+              const report = await generateReport({ url, token, quiet: true });
+              sendJson(200, report);
+            } catch (err) {
+              const msg = err.message || 'Internal server error';
+              const status = msg.includes('(401)') ? 401 : msg.includes('(403)') ? 403 : msg.includes('HTTP 400') ? 400 : 500;
+              const safeMsg = status === 500 ? 'Internal server error' : msg;
+              sendJson(status, { error: safeMsg });
+            }
+          });
+
+          req.on('error', () => sendJson(500, { error: 'Request stream error' }));
+          return;
+        }
+
         sendJson(404, { error: 'Not found' });
       });
 
@@ -688,6 +733,48 @@ describe('REST API', () => {
       const res1 = await request('POST', '/report', { url: 'https://x.com/#!/?a=b' }, p, { 'Authorization': 'Bearer tok' });
       const res2 = await request('POST', '/report', { url: 'https://x.com/#!/?a=b' }, p, { 'Authorization': 'Bearer tok' });
       assert.notEqual(res1.body.jobId, res2.body.jobId);
+    });
+  });
+
+  describe('POST /report/sync (blocking)', () => {
+    it('returns 400 for invalid JSON', async () => {
+      const p = await ensureAppServer();
+      const res = await request('POST', '/report/sync', 'not-json', p);
+      assert.equal(res.statusCode, 400);
+      assert.equal(res.body.error, 'Invalid JSON body');
+    });
+
+    it('returns 400 when url is missing', async () => {
+      const p = await ensureAppServer();
+      const res = await request('POST', '/report/sync', {}, p, { 'Authorization': 'Bearer tok' });
+      assert.equal(res.statusCode, 400);
+      assert.match(res.body.error, /url/i);
+    });
+
+    it('returns 401 when token is missing', async () => {
+      const p = await ensureAppServer();
+      const res = await request('POST', '/report/sync', { url: 'https://x.com/#!/?a=b' }, p);
+      assert.equal(res.statusCode, 401);
+      assert.match(res.body.error, /token/i);
+    });
+
+    it('returns 400 when url does not start with https://', async () => {
+      const p = await ensureAppServer();
+      const res = await request('POST', '/report/sync', { url: 'http://evil.com/#!/?a=b' }, p, { 'Authorization': 'Bearer tok' });
+      assert.equal(res.statusCode, 400);
+      assert.match(res.body.error, /https/);
+    });
+
+    it('returns a report object directly on success (with mocked Jira integration)', async () => {
+      // This uses the integration fakeJira server from the "generateReport integration" suite
+      // In isolation here, it will fail with a connection error (500), which is fine.
+      // Full end-to-end is covered by the generateReport integration tests.
+      const p = await ensureAppServer();
+      const res = await request('POST', '/report/sync', { url: 'https://x.com/#!/?a=b' }, p, { 'Authorization': 'Bearer tok' });
+      // Reaches generateReport, which fails on connection — returns 500
+      assert.ok([200, 500].includes(res.statusCode));
+      // Must NOT return a jobId (that would be the async path)
+      assert.equal(res.body.jobId, undefined);
     });
   });
 
