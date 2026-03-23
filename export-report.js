@@ -38,8 +38,8 @@ Server mode (REST API):
                       JSON body: { "url": "<report-url>" }
                       Header:    Authorization: Bearer <pat>
                       Returns:   202 { "jobId": "<id>" }
-  GET  /report/<id>   Poll job status
-                      Returns:   { "jobId", "status": "pending|complete|error", "report"?, "error"? }
+  GET  /report/<id>   Poll job status (fixed schema, report is base64)
+                      Returns:   { "jobId", "status", "report": base64|null, "error": string|null }
   POST /report/sync   Generate report and wait for result (blocking)
                       JSON body: { "url": "<report-url>" }
                       Header:    Authorization: Bearer <pat>
@@ -454,10 +454,16 @@ function startServer(opts) {
       const job = jobs.get(jobId);
       if (!job) return sendJson(404, { error: 'Job not found' });
 
-      const result = { jobId, status: job.status };
-      if (job.status === 'complete') result.report = job.report;
-      if (job.status === 'error') result.error = job.error;
-      return sendJson(200, result);
+      // Fixed schema: all fields always present (Power Automate compatibility).
+      // Report is base64-encoded JSON string.
+      return sendJson(200, {
+        jobId,
+        status: job.status,
+        report: job.status === 'complete'
+          ? Buffer.from(JSON.stringify(job.report)).toString('base64')
+          : null,
+        error: job.status === 'error' ? job.error : null,
+      });
     }
 
     // POST /report/sync — blocking: waits for result and returns report directly

@@ -455,10 +455,14 @@ describe('REST API', () => {
           if (!jobId) return sendJson(404, { error: 'Not found' });
           const job = jobs.get(jobId);
           if (!job) return sendJson(404, { error: 'Job not found' });
-          const result = { jobId, status: job.status };
-          if (job.status === 'complete') result.report = job.report;
-          if (job.status === 'error') result.error = job.error;
-          return sendJson(200, result);
+          return sendJson(200, {
+            jobId,
+            status: job.status,
+            report: job.status === 'complete'
+              ? Buffer.from(JSON.stringify(job.report)).toString('base64')
+              : null,
+            error: job.status === 'error' ? job.error : null,
+          });
         }
 
         if (req.method === 'POST' && req.url === '/report') {
@@ -697,11 +701,14 @@ describe('REST API', () => {
       const submitRes = await request('POST', '/report', { url: 'https://x.com/#!/?a=b' }, p, { 'Authorization': 'Bearer tok' });
       const { jobId } = submitRes.body;
 
-      // Poll immediately — should be pending (report generation will fail but hasn't settled yet or has)
+      // Poll immediately — fixed schema: all 4 fields always present
       const pollRes = await request('GET', `/report/${jobId}`, null, p);
       assert.equal(pollRes.statusCode, 200);
       assert.equal(pollRes.body.jobId, jobId);
       assert.ok(['pending', 'complete', 'error'].includes(pollRes.body.status));
+      // Fixed schema: report and error fields always present
+      assert.ok('report' in pollRes.body);
+      assert.ok('error' in pollRes.body);
     });
 
     it('GET /report/<jobId> eventually settles to complete or error', async () => {
@@ -713,6 +720,20 @@ describe('REST API', () => {
       const pollRes = await pollJob(p, jobId, 5000);
       assert.equal(pollRes.statusCode, 200);
       assert.ok(['complete', 'error'].includes(pollRes.body.status));
+      // Fixed schema: all 4 fields always present
+      assert.equal(typeof pollRes.body.jobId, 'string');
+      assert.ok('report' in pollRes.body);
+      assert.ok('error' in pollRes.body);
+      // Report is base64 string or null, error is string or null
+      if (pollRes.body.status === 'complete') {
+        assert.equal(typeof pollRes.body.report, 'string');
+        const decoded = JSON.parse(Buffer.from(pollRes.body.report, 'base64').toString('utf-8'));
+        assert.equal(typeof decoded, 'object');
+        assert.equal(pollRes.body.error, null);
+      } else {
+        assert.equal(pollRes.body.report, null);
+        assert.equal(typeof pollRes.body.error, 'string');
+      }
     });
 
     it('GET /report/<unknown-id> returns 404', async () => {

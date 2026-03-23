@@ -88,28 +88,36 @@ The job runs in the background. Use `GET /report/<jobId>` to poll for the result
 
 Poll the status of a submitted report job.
 
+The response always contains all four fields (`jobId`, `status`, `report`, `error`) for consistent schema parsing (e.g. in Power Automate). The `report` field is a **base64-encoded JSON string** when the job is complete, or `null` otherwise.
+
 **Response (200):**
 
 Pending:
 ```json
-{ "jobId": "a1b2c3d4...", "status": "pending" }
+{ "jobId": "a1b2c3d4...", "status": "pending", "report": null, "error": null }
 ```
 
-Complete:
+Complete (report is base64-encoded JSON):
 ```json
 {
   "jobId": "a1b2c3d4...",
   "status": "complete",
-  "report": {
-    "john.doe": { "hours": 118.5, "email": "john.doe@example.com" },
-    "jane.smith": { "hours": 96.25, "email": "jane.smith@example.com" }
-  }
+  "report": "eyJqb2huLmRvZSI6eyJob3VycyI6MTE4LjUsImVtYWlsIjoiam9obi5kb2VAZXhhbXBsZS5jb20ifX0=",
+  "error": null
 }
 ```
 
+To decode the report, base64-decode the `report` string:
+```bash
+echo "eyJqb2huLmRvZSI6..." | base64 -d
+# → {"john.doe":{"hours":118.5,"email":"john.doe@example.com"}}
+```
+
+In Power Automate, use `base64ToString(body('HTTP')['report'])` then `json(...)` to parse.
+
 Error:
 ```json
-{ "jobId": "a1b2c3d4...", "status": "error", "error": "Authentication failed (401)..." }
+{ "jobId": "a1b2c3d4...", "status": "error", "report": null, "error": "Authentication failed (401)..." }
 ```
 
 **Error responses:**
