@@ -58,9 +58,11 @@ Other:
 
 ## REST API
 
+The server uses an **async polling pattern**: submit a report job, receive a job ID, then poll for the result.
+
 ### `POST /report`
 
-Generate a report and return it as JSON.
+Submit a report generation job (async).
 
 **Request:**
 ```bash
@@ -70,22 +72,48 @@ curl -X POST http://localhost:3000/report \
   -d '{"url": "https://jira.example.com/jira/plugins/servlet/timereports?reportKey=...#!/?filterOrProjectId=filter_43643&startDate=2026-02-01&endDate=2026-02-28&..."}'
 ```
 
+**Response (202 Accepted):**
+```json
+{ "jobId": "a1b2c3d4e5f6..." }
+```
+
+The job runs in the background. Use `GET /report/<jobId>` to poll for the result.
+
+**Validation errors (returned synchronously):**
+- `400` — missing/invalid fields, invalid URL
+- `401` — authentication failed (missing token)
+- `413` — request body too large (>1 MB)
+
+### `GET /report/<jobId>`
+
+Poll the status of a submitted report job.
+
 **Response (200):**
+
+Pending:
+```json
+{ "jobId": "a1b2c3d4...", "status": "pending" }
+```
+
+Complete:
 ```json
 {
-  "john.doe": { "hours": 118.5, "email": "john.doe@example.com" },
-  "jane.smith": { "hours": 96.25, "email": "jane.smith@example.com" }
+  "jobId": "a1b2c3d4...",
+  "status": "complete",
+  "report": {
+    "john.doe": { "hours": 118.5, "email": "john.doe@example.com" },
+    "jane.smith": { "hours": 96.25, "email": "jane.smith@example.com" }
+  }
 }
 ```
 
-Returns a JSON object keyed by Jira username with hours and email.
+Error:
+```json
+{ "jobId": "a1b2c3d4...", "status": "error", "error": "Authentication failed (401)..." }
+```
 
 **Error responses:**
-- `400` — missing/invalid fields, invalid URL, bad Jira request
-- `401` — authentication failed (missing or invalid token)
-- `403` — insufficient permissions
-- `413` — request body too large (>1 MB)
-- `500` — internal server error
+- `404` — job not found (invalid ID or expired; jobs expire after 10 minutes)
 
 ### `GET /health`
 
@@ -136,18 +164,17 @@ node export-report.js --url "..." -o report.json
 # Start the server
 node export-report.js --server --port 8080
 
-# Generate a report via curl
+# Submit a report job
 curl -X POST http://localhost:8080/report \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer my-pat-token" \
   -d '{"url": "https://jira.example.com/...#!/?..."}'
+# → {"jobId":"a1b2c3d4..."}
 
-# Save report to file
-curl -s -X POST http://localhost:8080/report \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer my-pat-token" \
-  -d '{"url": "..."}' \
-  > report.json
+# Poll for the result
+curl http://localhost:8080/report/a1b2c3d4...
+# → {"jobId":"...","status":"pending"}       (still running)
+# → {"jobId":"...","status":"complete","report":{...}}  (done)
 ```
 
 ### Docker
@@ -168,7 +195,7 @@ docker run -p 8080:8080 -e PORT=8080 jira-tse
 4. Aggregates worklogs by user
 5. Generates a JSON report keyed by username with hours and email
 6. In CLI mode: writes JSON to disk and prints generation time
-7. In server mode: returns JSON report directly
+7. In server mode: returns a job ID immediately (202); client polls `GET /report/<jobId>` until the result is ready. Jobs expire after 10 minutes.
 
 ## Output format
 

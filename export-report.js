@@ -14,6 +14,7 @@ const https = require('https');
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 // ---- CLI -------------------------------------------------------------------
 
@@ -33,10 +34,13 @@ Server mode (REST API):
   --server       Start HTTP server instead of CLI export
   --port <port>  Server port (default: 3000, or PORT env var)
 
-  POST /report   JSON body: { "url": "<report-url>" }
-                 Header:    Authorization: Bearer <pat>
-                 Returns:   { "username": { hours, email }, ... }
-  GET  /health   Returns:   { "status": "ok" }
+  POST /report        Submit a report generation job (async)
+                      JSON body: { "url": "<report-url>" }
+                      Header:    Authorization: Bearer <pat>
+                      Returns:   202 { "jobId": "<id>" }
+  GET  /report/<id>   Poll job status
+                      Returns:   { "jobId", "status": "pending|complete|error", "report"?, "error"? }
+  GET  /health        Returns:   { "status": "ok" }
 
 Authentication:
   --token <pat>      Personal Access Token (or set JIRA_PAT env var)
@@ -127,6 +131,8 @@ function buildAuthHeaders(token) {
 
 const MAX_REDIRECTS = 5;
 const REQUEST_TIMEOUT_MS = 30000;
+const JOB_TTL_MS = 10 * 60 * 1000;           // 10 minutes
+const JOB_CLEANUP_INTERVAL_MS = 60 * 1000;   // 1 minute
 
 function httpGet(url, headers, _redirectCount) {
   const redirectCount = _redirectCount || 0;
@@ -397,6 +403,25 @@ function startServer(opts) {
   const port = opts.port || parseInt(process.env.PORT, 10) || 3000;
   const MAX_BODY = 1024 * 1024; // 1 MB
 
+  // ---- Job store (in-memory) ------------------------------------------------
+  const jobs = new Map();
+
+  function createJobId() {
+    return crypto.randomBytes(16).toString('hex');
+  }
+
+  function cleanupJobs() {
+    const now = Date.now();
+    for (const [id, job] of jobs) {
+      if (now - job.createdAt > JOB_TTL_MS) jobs.delete(id);
+    }
+  }
+
+  const cleanupTimer = setInterval(cleanupJobs, JOB_CLEANUP_INTERVAL_MS);
+  cleanupTimer.unref();
+
+  // ---------------------------------------------------------------------------
+
   const server = http.createServer((req, res) => {
     const startTime = Date.now();
     let responded = false;
@@ -418,7 +443,20 @@ function startServer(opts) {
       return sendJson(200, { status: 'ok' });
     }
 
-    // POST /report
+    // GET /report/:jobId — poll job status
+    if (req.method === 'GET' && req.url.startsWith('/report/')) {
+      const jobId = req.url.slice('/report/'.length);
+      if (!jobId) return sendJson(404, { error: 'Not found' });
+      const job = jobs.get(jobId);
+      if (!job) return sendJson(404, { error: 'Job not found' });
+
+      const result = { jobId, status: job.status };
+      if (job.status === 'complete') result.report = job.report;
+      if (job.status === 'error') result.error = job.error;
+      return sendJson(200, result);
+    }
+
+    // POST /report — submit async report job
     if (req.method === 'POST' && req.url === '/report') {
       const chunks = [];
       let size = 0;
@@ -430,7 +468,7 @@ function startServer(opts) {
         }
       });
 
-      req.on('end', async () => {
+      req.on('end', () => {
         if (size > MAX_BODY) {
           return sendJson(413, { error: 'Request body too large' });
         }
@@ -459,19 +497,28 @@ function startServer(opts) {
           return sendJson(401, { error: 'Missing token. Provide Authorization: Bearer <PAT> header.' });
         }
 
-        try {
-          const report = await generateReport({ url, token, quiet: true });
-          sendJson(200, report);
-        } catch (err) {
-          const msg = err.message || 'Internal server error';
-          const status = msg.includes('(401)') ? 401
-            : msg.includes('(403)') ? 403
-            : msg.includes('HTTP 400') ? 400
-            : 500;
-          // Don't leak internal details on 500 errors
-          const safeMsg = status === 500 ? 'Internal server error' : msg;
-          sendJson(status, { error: safeMsg });
-        }
+        // Create job and start report generation in the background
+        const jobId = createJobId();
+        const job = { status: 'pending', report: null, error: null, createdAt: Date.now() };
+        jobs.set(jobId, job);
+
+        generateReport({ url, token, quiet: true })
+          .then((report) => {
+            job.status = 'complete';
+            job.report = report;
+          })
+          .catch((err) => {
+            job.status = 'error';
+            const msg = err.message || 'Internal server error';
+            const errStatus = msg.includes('(401)') ? 'auth'
+              : msg.includes('(403)') ? 'auth'
+              : msg.includes('HTTP 400') ? 'request'
+              : 'internal';
+            // Don't leak internal details for unexpected errors
+            job.error = errStatus === 'internal' ? 'Internal server error' : msg;
+          });
+
+        sendJson(202, { jobId });
       });
 
       req.on('error', () => sendJson(500, { error: 'Request stream error' }));
@@ -485,6 +532,7 @@ function startServer(opts) {
   // Graceful shutdown
   const shutdown = () => {
     console.log('\nShutting down...');
+    clearInterval(cleanupTimer);
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(1), 5000).unref();
   };
@@ -493,8 +541,9 @@ function startServer(opts) {
 
   server.listen(port, () => {
     console.log(`Server listening on port ${port}`);
-    console.log('  POST /report  — generate report');
-    console.log('  GET  /health  — health check');
+    console.log('  POST /report       — submit report job (returns jobId)');
+    console.log('  GET  /report/<id>  — poll job status');
+    console.log('  GET  /health       — health check');
   });
 }
 

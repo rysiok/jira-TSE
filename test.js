@@ -9,6 +9,7 @@
 const { describe, it, before, after, mock } = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('http');
+const crypto = require('crypto');
 
 const {
   parseReportUrl,
@@ -423,22 +424,14 @@ describe('REST API', () => {
   // Start the app server for endpoint tests
   async function ensureAppServer() {
     if (server.appServer) return server.appPort;
-    // We use startServer which listens on a port
-    // But we need to capture the server instance
-    // Using a slightly different approach: create server directly
     const appPort = await new Promise((resolve) => {
       const origLog = console.log;
-      // Suppress server startup logs during tests
       console.log = () => {};
-      const s = http.createServer();
-      // We need to replicate the server handler from startServer
-      // Instead, let's just require and start
-      // Actually, let's just test the server by starting it
       console.log = origLog;
 
-      // Start on random port by importing startServer behavior
+      const jobs = new Map();
+
       const appSrv = http.createServer((req, res) => {
-        const startTime = Date.now();
         let responded = false;
 
         const sendJson = (statusCode, obj) => {
@@ -456,6 +449,18 @@ describe('REST API', () => {
           return sendJson(200, { status: 'ok' });
         }
 
+        // GET /report/:jobId — poll job status
+        if (req.method === 'GET' && req.url.startsWith('/report/')) {
+          const jobId = req.url.slice('/report/'.length);
+          if (!jobId) return sendJson(404, { error: 'Not found' });
+          const job = jobs.get(jobId);
+          if (!job) return sendJson(404, { error: 'Job not found' });
+          const result = { jobId, status: job.status };
+          if (job.status === 'complete') result.report = job.report;
+          if (job.status === 'error') result.error = job.error;
+          return sendJson(200, result);
+        }
+
         if (req.method === 'POST' && req.url === '/report') {
           const chunks = [];
           let size = 0;
@@ -466,7 +471,7 @@ describe('REST API', () => {
             if (size <= MAX_BODY) chunks.push(chunk);
           });
 
-          req.on('end', async () => {
+          req.on('end', () => {
             if (size > MAX_BODY) return sendJson(413, { error: 'Request body too large' });
 
             let body;
@@ -486,16 +491,21 @@ describe('REST API', () => {
               : '';
             if (!token) return sendJson(401, { error: 'Missing token. Provide Authorization: Bearer <PAT> header.' });
 
-            try {
-              const { generateReport } = require('./export-report.js');
-              const report = await generateReport({ url, token, quiet: true });
-              sendJson(200, { report });
-            } catch (err) {
-              const msg = err.message || 'Internal server error';
-              const status = msg.includes('(401)') ? 401 : msg.includes('(403)') ? 403 : msg.includes('HTTP 400') ? 400 : 500;
-              const safeMsg = status === 500 ? 'Internal server error' : msg;
-              sendJson(status, { error: safeMsg });
-            }
+            const jobId = crypto.randomBytes(16).toString('hex');
+            const job = { status: 'pending', report: null, error: null, createdAt: Date.now() };
+            jobs.set(jobId, job);
+
+            const { generateReport } = require('./export-report.js');
+            generateReport({ url, token, quiet: true })
+              .then((report) => { job.status = 'complete'; job.report = report; })
+              .catch((err) => {
+                job.status = 'error';
+                const msg = err.message || 'Internal server error';
+                const errType = msg.includes('(401)') ? 'auth' : msg.includes('(403)') ? 'auth' : msg.includes('HTTP 400') ? 'request' : 'internal';
+                job.error = errType === 'internal' ? 'Internal server error' : msg;
+              });
+
+            sendJson(202, { jobId });
           });
 
           req.on('error', () => sendJson(500, { error: 'Request stream error' }));
@@ -512,6 +522,18 @@ describe('REST API', () => {
       });
     });
     return appPort;
+  }
+
+  // Helper: poll a job until it settles (complete or error) or times out
+  async function pollJob(port, jobId, timeoutMs) {
+    const deadline = Date.now() + (timeoutMs || 5000);
+    while (Date.now() < deadline) {
+      const res = await request('GET', `/report/${jobId}`, null, port);
+      if (res.body && res.body.status !== 'pending') return res;
+      await new Promise(r => setTimeout(r, 50));
+    }
+    // Return last pending response
+    return request('GET', `/report/${jobId}`, null, port);
   }
 
   describe('GET /health', () => {
@@ -590,8 +612,10 @@ describe('REST API', () => {
     it('accepts token from Authorization header', async () => {
       const p = await ensureAppServer();
       const res = await request('POST', '/report', { url: 'https://x.com/#!/?a=b' }, p, { 'Authorization': 'Bearer test-pat' });
-      // Token is valid (string), so it proceeds past validation — will fail on Jira call (500)
-      assert.ok([200, 500].includes(res.statusCode));
+      // Valid token → job is created, returns 202 with jobId
+      assert.equal(res.statusCode, 202);
+      assert.ok(typeof res.body.jobId === 'string');
+      assert.ok(res.body.jobId.length > 0);
     });
 
     it('ignores body token field', async () => {
@@ -603,15 +627,67 @@ describe('REST API', () => {
   });
 
   describe('POST /report with mocked Jira', () => {
-    it('returns JSON report for valid request', async () => {
+    it('returns 202 with jobId for valid request', async () => {
       const p = await ensureAppServer();
       const jiraUrl = `https://localhost:${server.jiraPort}/plugins/servlet/timereports?reportKey=test#!/?filterOrProjectId=filter_100&startDate=2026-02-01&endDate=2026-02-28&groupByField=workeduser&sum=month&user=John.Doe&view=month&export=html`;
       const res = await request('POST', '/report', { url: jiraUrl }, p, { 'Authorization': 'Bearer test-token' });
 
-      // This will fail connecting to fake Jira via HTTPS (it's HTTP),
-      // so we expect a 500 error. The validation tests above cover the logic.
-      // For a true end-to-end test with mocked Jira, see the integration test below.
-      assert.ok([200, 500].includes(res.statusCode));
+      assert.equal(res.statusCode, 202);
+      assert.ok(typeof res.body.jobId === 'string');
+      assert.ok(res.body.jobId.length > 0);
+    });
+  });
+
+  describe('Async polling', () => {
+    it('POST /report returns 202 with a jobId', async () => {
+      const p = await ensureAppServer();
+      const res = await request('POST', '/report', { url: 'https://x.com/#!/?a=b' }, p, { 'Authorization': 'Bearer tok' });
+      assert.equal(res.statusCode, 202);
+      assert.equal(typeof res.body.jobId, 'string');
+      assert.ok(res.body.jobId.length >= 16);
+    });
+
+    it('GET /report/<jobId> returns pending initially', async () => {
+      const p = await ensureAppServer();
+      const submitRes = await request('POST', '/report', { url: 'https://x.com/#!/?a=b' }, p, { 'Authorization': 'Bearer tok' });
+      const { jobId } = submitRes.body;
+
+      // Poll immediately — should be pending (report generation will fail but hasn't settled yet or has)
+      const pollRes = await request('GET', `/report/${jobId}`, null, p);
+      assert.equal(pollRes.statusCode, 200);
+      assert.equal(pollRes.body.jobId, jobId);
+      assert.ok(['pending', 'complete', 'error'].includes(pollRes.body.status));
+    });
+
+    it('GET /report/<jobId> eventually settles to complete or error', async () => {
+      const p = await ensureAppServer();
+      const submitRes = await request('POST', '/report', { url: 'https://x.com/#!/?a=b' }, p, { 'Authorization': 'Bearer tok' });
+      const { jobId } = submitRes.body;
+
+      // Poll until settled (the job will fail since there's no real Jira, that's fine)
+      const pollRes = await pollJob(p, jobId, 5000);
+      assert.equal(pollRes.statusCode, 200);
+      assert.ok(['complete', 'error'].includes(pollRes.body.status));
+    });
+
+    it('GET /report/<unknown-id> returns 404', async () => {
+      const p = await ensureAppServer();
+      const res = await request('GET', '/report/nonexistent-id-12345', null, p);
+      assert.equal(res.statusCode, 404);
+      assert.equal(res.body.error, 'Job not found');
+    });
+
+    it('GET /report/ with empty jobId returns 404', async () => {
+      const p = await ensureAppServer();
+      const res = await request('GET', '/report/', null, p);
+      assert.equal(res.statusCode, 404);
+    });
+
+    it('each POST /report returns a unique jobId', async () => {
+      const p = await ensureAppServer();
+      const res1 = await request('POST', '/report', { url: 'https://x.com/#!/?a=b' }, p, { 'Authorization': 'Bearer tok' });
+      const res2 = await request('POST', '/report', { url: 'https://x.com/#!/?a=b' }, p, { 'Authorization': 'Bearer tok' });
+      assert.notEqual(res1.body.jobId, res2.body.jobId);
     });
   });
 
